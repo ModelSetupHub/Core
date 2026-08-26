@@ -11,6 +11,13 @@ COMPONENT = "ollama/runtime"
 
 
 def get_status() -> dict:
+    """
+    Get the current Ollama runtime status.
+
+    Returns installation state, server state, health state,
+    and the installed client version.
+    """
+
     installed = shutil.which("ollama") is not None
 
     if not installed:
@@ -57,6 +64,8 @@ def get_status() -> dict:
             )[1].strip()
             break
 
+    # Check the local Ollama API instead of relying on
+    # the CLI client to determine whether the server is running.
     running = False
     healthy = False
 
@@ -93,6 +102,12 @@ def get_status() -> dict:
 
 
 def install(installer_path: str) -> None:
+    """
+    Install Ollama from an existing local installer.
+
+    The installer must already exist on the filesystem.
+    """
+
     installer = Path(
         installer_path
     ).expanduser().resolve()
@@ -150,6 +165,10 @@ def install(installer_path: str) -> None:
 
 
 def start() -> None:
+    """
+    Start the Ollama server if it is not already running.
+    """
+
     status = get_status()
 
     if status["running"]:
@@ -202,6 +221,10 @@ def start() -> None:
 
 
 def stop() -> None:
+    """
+    Stop the Ollama server process.
+    """
+
     write_log(
         level="INFO",
         component=COMPONENT,
@@ -210,6 +233,7 @@ def stop() -> None:
     )
 
     try:
+        # Use the native process command for each platform.
         if os.name == "nt":
             subprocess.run(
                 [
@@ -251,6 +275,10 @@ def stop() -> None:
 
 
 def restart() -> None:
+    """
+    Restart the Ollama server.
+    """
+
     write_log(
         level="INFO",
         component=COMPONENT,
