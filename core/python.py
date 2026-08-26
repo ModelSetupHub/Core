@@ -3,6 +3,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from core.logging import write_log
+
 
 def create_environment(path: str):
     environment = Path(path).expanduser().resolve()
@@ -22,10 +24,31 @@ def create_environment(path: str):
     )
 
     if result.returncode != 0:
+        write_log(
+            level="ERROR",
+            component="python",
+            action="create_environment",
+            message="Failed to create environment",
+            details={
+                "path": str(environment),
+                "error": result.stderr.strip(),
+            },
+        )
+
         raise RuntimeError(
             result.stderr.strip()
             or f"Failed to create environment: {environment}"
         )
+
+    write_log(
+        level="INFO",
+        component="python",
+        action="create_environment",
+        message="Environment created successfully",
+        details={
+            "path": str(environment),
+        },
+    )
 
     return str(environment)
 
@@ -39,6 +62,16 @@ def remove_environment(path: str):
         )
 
     shutil.rmtree(environment)
+
+    write_log(
+        level="INFO",
+        component="python",
+        action="remove_environment",
+        message="Environment removed successfully",
+        details={
+            "path": str(environment),
+        },
+    )
 
 
 def _get_python_path(environment: str | None = None) -> str:
@@ -89,10 +122,33 @@ def install_packages(
     )
 
     if result.returncode != 0:
+        write_log(
+            level="ERROR",
+            component="python",
+            action="install_packages",
+            message="Failed to install packages",
+            details={
+                "packages": packages,
+                "environment": environment,
+                "error": result.stderr.strip(),
+            },
+        )
+
         raise RuntimeError(
             result.stderr.strip()
             or "Failed to install packages"
         )
+
+    write_log(
+        level="INFO",
+        component="python",
+        action="install_packages",
+        message="Packages installed successfully",
+        details={
+            "packages": packages,
+            "environment": environment,
+        },
+    )
 
     return result.stdout.strip()
 
@@ -125,10 +181,33 @@ def uninstall_packages(
     )
 
     if result.returncode != 0:
+        write_log(
+            level="ERROR",
+            component="python",
+            action="uninstall_packages",
+            message="Failed to uninstall packages",
+            details={
+                "packages": packages,
+                "environment": environment,
+                "error": result.stderr.strip(),
+            },
+        )
+
         raise RuntimeError(
             result.stderr.strip()
             or "Failed to uninstall packages"
         )
+
+    write_log(
+        level="INFO",
+        component="python",
+        action="uninstall_packages",
+        message="Packages uninstalled successfully",
+        details={
+            "packages": packages,
+            "environment": environment,
+        },
+    )
 
     return result.stdout.strip()
 
@@ -182,6 +261,16 @@ def create_script(
         encoding="utf-8",
     )
 
+    write_log(
+        level="INFO",
+        component="python",
+        action="create_script",
+        message="Script created successfully",
+        details={
+            "path": str(script),
+        },
+    )
+
     return str(script)
 
 
@@ -201,6 +290,16 @@ def edit_script(
         encoding="utf-8",
     )
 
+    write_log(
+        level="INFO",
+        component="python",
+        action="edit_script",
+        message="Script updated successfully",
+        details={
+            "path": str(script),
+        },
+    )
+
     return str(script)
 
 
@@ -213,6 +312,16 @@ def delete_script(path: str):
         )
 
     script.unlink()
+
+    write_log(
+        level="INFO",
+        component="python",
+        action="delete_script",
+        message="Script deleted successfully",
+        details={
+            "path": str(script),
+        },
+    )
 
     return str(script)
 
@@ -243,9 +352,32 @@ def run_script(
     )
 
     if result.returncode != 0:
+        write_log(
+            level="ERROR",
+            component="python",
+            action="run_script",
+            message="Failed to execute script",
+            details={
+                "path": str(script),
+                "environment": environment,
+                "error": result.stderr.strip(),
+            },
+        )
+
         raise RuntimeError(
             result.stderr.strip()
             or f"Failed to run script: {script}"
         )
+
+    write_log(
+        level="INFO",
+        component="python",
+        action="run_script",
+        message="Script executed successfully",
+        details={
+            "path": str(script),
+            "environment": environment,
+        },
+    )
 
     return result.stdout.strip()
