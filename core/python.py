@@ -1,9 +1,151 @@
 import shutil
 import subprocess
 import sys
+import winreg
 from pathlib import Path
 
 from core.logging import write_log
+
+
+def install_python(
+    installer_path: str,
+    all_users: bool = False,
+):
+    installer = Path(
+        installer_path
+    ).expanduser().resolve()
+
+    if not installer.is_file():
+        raise FileNotFoundError(
+            f"Python installer not found: {installer}"
+        )
+
+    command = [
+        str(installer),
+        "/quiet",
+        "PrependPath=1",
+        "Include_test=0",
+    ]
+
+    if all_users:
+        command.append(
+            "InstallAllUsers=1"
+        )
+    else:
+        command.append(
+            "InstallAllUsers=0"
+        )
+
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+    if result.returncode != 0:
+        write_log(
+            level="ERROR",
+            component="python",
+            action="install_python",
+            message="Failed to install Python",
+            details={
+                "installer": str(installer),
+                "all_users": all_users,
+                "error": result.stderr.strip(),
+            },
+        )
+
+        raise RuntimeError(
+            result.stderr.strip()
+            or "Failed to install Python"
+        )
+
+    write_log(
+        level="INFO",
+        component="python",
+        action="install_python",
+        message="Python installed successfully",
+        details={
+            "installer": str(installer),
+            "all_users": all_users,
+        },
+    )
+
+    return get_python_status()
+
+
+def get_python_status():
+    versions = []
+
+    locations = [
+        (
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Python\PythonCore",
+        ),
+        (
+            winreg.HKEY_CURRENT_USER,
+            r"SOFTWARE\Python\PythonCore",
+        ),
+    ]
+
+    for hive, key_path in locations:
+        try:
+            key = winreg.OpenKey(
+                hive,
+                key_path,
+            )
+
+            index = 0
+
+            while True:
+                try:
+                    version = winreg.EnumKey(
+                        key,
+                        index,
+                    )
+
+                    install_path_key = winreg.OpenKey(
+                        key,
+                        f"{version}\\InstallPath",
+                    )
+
+                    install_path, _ = winreg.QueryValueEx(
+                        install_path_key,
+                        None,
+                    )
+
+                    python_path = Path(
+                        install_path
+                    ) / "python.exe"
+
+                    if python_path.is_file():
+                        versions.append(
+                            {
+                                "version": version,
+                                "path": str(python_path),
+                            }
+                        )
+
+                    index += 1
+
+                except OSError:
+                    break
+
+        except FileNotFoundError:
+            continue
+
+    current = {
+        "version": sys.version.split()[0],
+        "path": sys.executable,
+    }
+
+    if current not in versions:
+        versions.append(current)
+
+    return versions
 
 
 def create_environment(path: str):
@@ -15,7 +157,12 @@ def create_environment(path: str):
         )
 
     result = subprocess.run(
-        [sys.executable, "-m", "venv", str(environment)],
+        [
+            sys.executable,
+            "-m",
+            "venv",
+            str(environment),
+        ],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -74,7 +221,7 @@ def remove_environment(path: str):
     )
 
 
-def _get_python_path(environment: str | None = None) -> str:
+def _get_python_path(environment: str | None = None):
     if environment is None:
         return sys.executable
 
@@ -83,9 +230,17 @@ def _get_python_path(environment: str | None = None) -> str:
     ).expanduser().resolve()
 
     if sys.platform == "win32":
-        python_path = environment_path / "Scripts" / "python.exe"
+        python_path = (
+            environment_path
+            / "Scripts"
+            / "python.exe"
+        )
     else:
-        python_path = environment_path / "bin" / "python"
+        python_path = (
+            environment_path
+            / "bin"
+            / "python"
+        )
 
     if not python_path.is_file():
         raise FileNotFoundError(
@@ -122,18 +277,6 @@ def install_packages(
     )
 
     if result.returncode != 0:
-        write_log(
-            level="ERROR",
-            component="python",
-            action="install_packages",
-            message="Failed to install packages",
-            details={
-                "packages": packages,
-                "environment": environment,
-                "error": result.stderr.strip(),
-            },
-        )
-
         raise RuntimeError(
             result.stderr.strip()
             or "Failed to install packages"
@@ -157,11 +300,6 @@ def uninstall_packages(
     packages: list[str],
     environment: str | None = None,
 ):
-    if not packages:
-        raise ValueError(
-            "At least one package is required"
-        )
-
     python_path = _get_python_path(environment)
 
     result = subprocess.run(
@@ -181,18 +319,6 @@ def uninstall_packages(
     )
 
     if result.returncode != 0:
-        write_log(
-            level="ERROR",
-            component="python",
-            action="uninstall_packages",
-            message="Failed to uninstall packages",
-            details={
-                "packages": packages,
-                "environment": environment,
-                "error": result.stderr.strip(),
-            },
-        )
-
         raise RuntimeError(
             result.stderr.strip()
             or "Failed to uninstall packages"
@@ -352,18 +478,6 @@ def run_script(
     )
 
     if result.returncode != 0:
-        write_log(
-            level="ERROR",
-            component="python",
-            action="run_script",
-            message="Failed to execute script",
-            details={
-                "path": str(script),
-                "environment": environment,
-                "error": result.stderr.strip(),
-            },
-        )
-
         raise RuntimeError(
             result.stderr.strip()
             or f"Failed to run script: {script}"
