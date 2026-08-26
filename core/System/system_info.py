@@ -1,3 +1,4 @@
+import json
 import os
 import platform
 import shutil
@@ -6,6 +7,11 @@ import sys
 
 import psutil
 
+from core.logging import write_log
+
+
+COMPONENT = "system/scanner"
+
 
 # ============================================================
 # Utility Functions
@@ -13,12 +19,14 @@ import psutil
 
 def run_command(command, timeout=5):
     """Run a system command and return stdout."""
+
     try:
         result = subprocess.run(
             command,
             capture_output=True,
             text=True,
-            timeout=timeout
+            timeout=timeout,
+            check=False,
         )
 
         if result.returncode == 0:
@@ -32,16 +40,19 @@ def run_command(command, timeout=5):
 
 def bytes_to_gb(value):
     """Convert bytes to GB."""
+
     return value / (1024 ** 3)
 
 
 def format_gb(value):
     """Format bytes as GB."""
+
     return f"{bytes_to_gb(value):.1f} GB"
 
 
 def print_section(title):
     """Print a clean section header."""
+
     print()
     print(f"┌─ {title}")
     print("│")
@@ -49,6 +60,7 @@ def print_section(title):
 
 def print_item(label, value):
     """Print a formatted information item."""
+
     print(f"│  {label:<23} {value}")
 
 
@@ -57,7 +69,7 @@ def print_item(label, value):
 # ============================================================
 
 def get_system_info():
-    """Get detailed operating system information."""
+    """Get operating system information."""
 
     system_name = platform.system()
 
@@ -91,7 +103,7 @@ def get_system_info():
             "version": display_version or platform.release(),
             "build": build or "Unknown",
             "architecture": platform.machine(),
-            "python": platform.python_version()
+            "python": platform.python_version(),
         }
 
     return {
@@ -99,7 +111,7 @@ def get_system_info():
         "version": platform.release(),
         "build": platform.version(),
         "architecture": platform.machine(),
-        "python": platform.python_version()
+        "python": platform.python_version(),
     }
 
 
@@ -137,33 +149,38 @@ def get_cpu_info():
                 f"{frequency.max / 1000:.2f} GHz"
             )
 
-    # Get processor base/max clock from Windows
-    clock_speed = run_command([
+    reported_clock = run_command([
         "powershell",
         "-NoProfile",
         "-Command",
         "(Get-CimInstance Win32_Processor).MaxClockSpeed"
     ])
 
-    if clock_speed:
+    if reported_clock:
 
         try:
-            base_frequency = f"{int(clock_speed) / 1000:.2f} GHz"
+            reported_clock = (
+                f"{int(reported_clock) / 1000:.2f} GHz"
+            )
 
         except ValueError:
-            base_frequency = "Unknown"
+            reported_clock = "Unknown"
 
     else:
-        base_frequency = "Unknown"
+        reported_clock = "Unknown"
 
     return {
-        "model": cpu_name or platform.processor() or "Unknown",
+        "model": (
+            cpu_name
+            or platform.processor()
+            or "Unknown"
+        ),
         "architecture": platform.machine(),
         "physical_cores": physical_cores or "Unknown",
         "logical_threads": logical_threads or "Unknown",
-        "base_frequency": base_frequency,
+        "reported_clock": reported_clock,
         "current_frequency": current_frequency,
-        "max_frequency": max_frequency
+        "max_frequency": max_frequency,
     }
 
 
@@ -173,9 +190,9 @@ def get_cpu_info():
 
 def get_cpu_features():
     """
-    Detect CPU instruction sets.
+    Detect CPU instruction sets where possible.
 
-    These can be important for CPU-based inference.
+    Exact instruction-set detection is platform dependent.
     """
 
     features = []
@@ -193,7 +210,7 @@ def get_cpu_features():
                 ("AVX", "avx"),
                 ("FMA", "fma"),
                 ("SSE4.2", "sse4_2"),
-                ("SSE4.1", "sse4_1")
+                ("SSE4.1", "sse4_1"),
             ]
 
             for display_name, cpu_flag in possible_features:
@@ -205,10 +222,6 @@ def get_cpu_features():
             pass
 
     elif platform.system() == "Windows":
-
-        # Windows does not expose all CPU instruction sets
-        # reliably through WMI.
-        # PowerShell is used here for basic architecture detection.
 
         architecture = platform.machine().lower()
 
@@ -226,7 +239,7 @@ def get_cpu_features():
 # ============================================================
 
 def get_memory_info():
-    """Get RAM capacity and usage."""
+    """Get RAM usage information."""
 
     memory = psutil.virtual_memory()
 
@@ -234,15 +247,13 @@ def get_memory_info():
         "total": memory.total,
         "available": memory.available,
         "used": memory.used,
-        "usage_percent": memory.percent
+        "usage_percent": memory.percent,
     }
 
 
 def get_ram_modules():
     """
     Get physical RAM module information on Windows.
-
-    Requires PowerShell / WMI.
     """
 
     if platform.system() != "Windows":
@@ -271,14 +282,11 @@ def get_ram_modules():
         return []
 
     try:
-        import json
 
         data = json.loads(output)
 
         if isinstance(data, dict):
             data = [data]
-
-        modules = []
 
         memory_types = {
             20: "DDR",
@@ -286,56 +294,69 @@ def get_ram_modules():
             22: "DDR2",
             24: "DDR3",
             26: "DDR4",
-            27: "DDR5"
+            27: "DDR5",
         }
+
+        modules = []
 
         for module in data:
 
             capacity = module.get("Capacity")
             speed = module.get("Speed")
-            configured_speed = module.get("ConfiguredClockSpeed")
-            memory_type = module.get("SMBIOSMemoryType")
+            configured_speed = module.get(
+                "ConfiguredClockSpeed"
+            )
+            memory_type = module.get(
+                "SMBIOSMemoryType"
+            )
 
             if capacity:
-                capacity_gb = bytes_to_gb(int(capacity))
-                capacity_text = f"{capacity_gb:.1f} GB"
+
+                capacity_text = (
+                    f"{bytes_to_gb(int(capacity)):.1f} GB"
+                )
+
             else:
                 capacity_text = "Unknown"
 
-            if speed:
-                speed_text = f"{speed} MT/s"
-            else:
-                speed_text = "Unknown"
+            speed_text = (
+                f"{speed} MT/s"
+                if speed
+                else "Unknown"
+            )
 
-            if configured_speed:
-                configured_speed_text = (
-                    f"{configured_speed} MT/s"
-                )
-            else:
-                configured_speed_text = "Unknown"
+            configured_speed_text = (
+                f"{configured_speed} MT/s"
+                if configured_speed
+                else "Unknown"
+            )
 
             ram_type = memory_types.get(
-                int(memory_type) if memory_type else -1,
-                "Unknown"
+                int(memory_type)
+                if memory_type
+                else -1,
+                "Unknown",
             )
 
             modules.append({
-                "manufacturer": module.get(
-                    "Manufacturer"
-                ) or "Unknown",
-
-                "part_number": module.get(
-                    "PartNumber"
-                ) or "Unknown",
-
+                "manufacturer": (
+                    module.get("Manufacturer")
+                    or "Unknown"
+                ),
+                "part_number": (
+                    module.get("PartNumber")
+                    or "Unknown"
+                ),
                 "capacity": capacity_text,
                 "speed": speed_text,
-                "configured_speed": configured_speed_text,
+                "configured_speed": (
+                    configured_speed_text
+                ),
                 "type": ram_type,
-
-                "slot": module.get(
-                    "DeviceLocator"
-                ) or "Unknown"
+                "slot": (
+                    module.get("DeviceLocator")
+                    or "Unknown"
+                ),
             })
 
         return modules
@@ -346,17 +367,11 @@ def get_ram_modules():
 
 def get_memory_channels():
     """
-    Try to determine memory channel configuration.
+    Determine memory channel configuration.
 
-    Windows does not expose this consistently, so this
-    may return Unknown.
+    WMI does not expose this reliably across all systems.
     """
 
-    if platform.system() != "Windows":
-        return "Unknown"
-
-    # There is no universally reliable WMI field for
-    # active memory channel configuration.
     return "Unknown"
 
 
@@ -371,7 +386,6 @@ def get_nvidia_info():
 
     command = [
         "nvidia-smi",
-
         "--query-gpu="
         "name,"
         "driver_version,"
@@ -379,8 +393,7 @@ def get_nvidia_info():
         "memory.used,"
         "memory.free,"
         "compute_cap",
-
-        "--format=csv,noheader,nounits"
+        "--format=csv,noheader,nounits",
     ]
 
     output = run_command(command)
@@ -406,7 +419,7 @@ def get_nvidia_info():
             "vram_total": f"{parts[2]} MB",
             "vram_used": f"{parts[3]} MB",
             "vram_free": f"{parts[4]} MB",
-            "compute_capability": parts[5]
+            "compute_capability": parts[5],
         })
 
     return gpus
@@ -425,7 +438,12 @@ def get_cuda_version():
         if "CUDA Version" in line:
 
             try:
-                value = line.split("CUDA Version:")[1]
+
+                value = line.split(
+                    "CUDA Version:",
+                    1
+                )[1]
+
                 return value.strip().split()[0]
 
             except Exception:
@@ -439,7 +457,7 @@ def get_cuda_version():
 # ============================================================
 
 def get_storage_info():
-    """Get available storage on all mounted drives."""
+    """Get storage information for mounted drives."""
 
     drives = []
 
@@ -454,13 +472,15 @@ def get_storage_info():
 
             try:
 
-                total, used, free = shutil.disk_usage(drive)
+                total, used, free = (
+                    shutil.disk_usage(drive)
+                )
 
                 drives.append({
                     "drive": drive,
                     "total": total,
                     "used": used,
-                    "free": free
+                    "free": free,
                 })
 
             except Exception:
@@ -470,13 +490,15 @@ def get_storage_info():
 
         try:
 
-            total, used, free = shutil.disk_usage("/")
+            total, used, free = (
+                shutil.disk_usage("/")
+            )
 
             drives.append({
                 "drive": "/",
                 "total": total,
                 "used": used,
-                "free": free
+                "free": free,
             })
 
         except Exception:
@@ -486,10 +508,127 @@ def get_storage_info():
 
 
 # ============================================================
-# Main
+# System Scan
 # ============================================================
 
-def main():
+def scan_system():
+    """
+    Collect the complete system hardware/software profile.
+
+    Returns:
+        dict: Machine-readable system profile.
+    """
+
+    write_log(
+        level="INFO",
+        component=COMPONENT,
+        action="scan",
+        message="System hardware scan started",
+    )
+
+    try:
+
+        system = get_system_info()
+        cpu = get_cpu_info()
+        cpu_features = get_cpu_features()
+        memory = get_memory_info()
+        ram_modules = get_ram_modules()
+        gpus = get_nvidia_info()
+        cuda_version = get_cuda_version()
+        storage = get_storage_info()
+
+        profile = {
+            "system": system,
+
+            "cpu": {
+                **cpu,
+                "features": cpu_features,
+            },
+
+            "memory": {
+                "total_gb": round(
+                    bytes_to_gb(memory["total"]),
+                    2,
+                ),
+                "available_gb": round(
+                    bytes_to_gb(memory["available"]),
+                    2,
+                ),
+                "used_gb": round(
+                    bytes_to_gb(memory["used"]),
+                    2,
+                ),
+                "usage_percent": memory[
+                    "usage_percent"
+                ],
+                "modules": ram_modules,
+                "channels": get_memory_channels(),
+            },
+
+            "gpu": {
+                "count": len(gpus),
+                "devices": gpus,
+                "cuda_version": cuda_version,
+            },
+
+            "storage": [
+                {
+                    "drive": drive["drive"],
+                    "total_gb": round(
+                        bytes_to_gb(drive["total"]),
+                        2,
+                    ),
+                    "used_gb": round(
+                        bytes_to_gb(drive["used"]),
+                        2,
+                    ),
+                    "free_gb": round(
+                        bytes_to_gb(drive["free"]),
+                        2,
+                    ),
+                }
+                for drive in storage
+            ],
+        }
+
+        write_log(
+            level="INFO",
+            component=COMPONENT,
+            action="scan",
+            message="System hardware scan completed",
+            details=profile,
+        )
+
+        return profile
+
+    except Exception as error:
+
+        write_log(
+            level="ERROR",
+            component=COMPONENT,
+            action="scan",
+            message="System hardware scan failed",
+            details={
+                "error_type": type(error).__name__,
+                "error": str(error),
+            },
+        )
+
+        raise
+
+
+# ============================================================
+# Display
+# ============================================================
+
+def display_system_info(profile):
+    """Display the system profile in a clean terminal layout."""
+
+    system = profile["system"]
+    cpu = profile["cpu"]
+    memory = profile["memory"]
+    gpu = profile["gpu"]
+    storage = profile["storage"]
 
     print()
     print("╔══════════════════════════════════════════════════════╗")
@@ -500,248 +639,236 @@ def main():
     # System
     # --------------------------------------------------------
 
-    system = get_system_info()
-
     print_section("SYSTEM")
 
     print_item(
         "Operating System",
-        system["name"]
+        system["name"],
     )
 
     print_item(
         "Version",
-        system["version"]
+        system["version"],
     )
 
     print_item(
         "Build",
-        system["build"]
+        system["build"],
     )
 
     print_item(
         "Architecture",
-        system["architecture"]
+        system["architecture"],
     )
 
     print_item(
         "Python",
-        system["python"]
+        system["python"],
     )
 
     # --------------------------------------------------------
     # CPU
     # --------------------------------------------------------
 
-    cpu = get_cpu_info()
-
     print_section("CPU")
 
     print_item(
         "Model",
-        cpu["model"]
+        cpu["model"],
     )
 
     print_item(
         "Architecture",
-        cpu["architecture"]
+        cpu["architecture"],
     )
 
     print_item(
         "Physical Cores",
-        cpu["physical_cores"]
+        cpu["physical_cores"],
     )
 
     print_item(
         "Logical Threads",
-        cpu["logical_threads"]
+        cpu["logical_threads"],
     )
 
     print_item(
-        "Base Clock",
-        cpu["base_frequency"]
+        "Reported Clock",
+        cpu["reported_clock"],
     )
 
     print_item(
         "Current Clock",
-        cpu["current_frequency"]
+        cpu["current_frequency"],
     )
 
     print_item(
         "Max Clock",
-        cpu["max_frequency"]
+        cpu["max_frequency"],
     )
 
     # --------------------------------------------------------
     # CPU Features
     # --------------------------------------------------------
 
-    features = get_cpu_features()
-
     print_section("CPU FEATURES")
 
-    if features:
+    if cpu["features"]:
+
         print_item(
             "Instruction Sets",
-            ", ".join(features)
+            ", ".join(cpu["features"]),
         )
+
     else:
+
         print_item(
             "Instruction Sets",
-            "Not detected"
+            "Not detected",
         )
 
     # --------------------------------------------------------
     # Memory
     # --------------------------------------------------------
 
-    memory = get_memory_info()
-
-    ram_modules = get_ram_modules()
-
     print_section("MEMORY")
 
     print_item(
         "Total RAM",
-        format_gb(memory["total"])
+        f"{memory['total_gb']:.1f} GB",
     )
 
     print_item(
         "Available RAM",
-        format_gb(memory["available"])
+        f"{memory['available_gb']:.1f} GB",
     )
 
     print_item(
         "Used RAM",
-        format_gb(memory["used"])
+        f"{memory['used_gb']:.1f} GB",
     )
 
     print_item(
         "Usage",
-        f"{memory['usage_percent']:.1f}%"
+        f"{memory['usage_percent']:.1f}%",
     )
 
-    if ram_modules:
+    if memory["modules"]:
 
         print_item(
             "Memory Type",
-            ram_modules[0]["type"]
+            memory["modules"][0]["type"],
         )
 
         print_item(
             "Module Count",
-            len(ram_modules)
+            len(memory["modules"]),
         )
 
         for index, module in enumerate(
-            ram_modules,
-            start=1
+            memory["modules"],
+            start=1,
         ):
 
             print()
+
             print_item(
                 f"Module {index}",
-                module["capacity"]
+                module["capacity"],
             )
 
             print_item(
                 "Speed",
-                module["speed"]
+                module["speed"],
             )
 
             print_item(
                 "Configured Speed",
-                module["configured_speed"]
+                module["configured_speed"],
             )
 
             print_item(
                 "Manufacturer",
-                module["manufacturer"]
+                module["manufacturer"],
             )
 
             print_item(
                 "Slot",
-                module["slot"]
+                module["slot"],
             )
 
         print_item(
             "Memory Channels",
-            get_memory_channels()
+            memory["channels"],
         )
 
     # --------------------------------------------------------
     # GPU
     # --------------------------------------------------------
 
-    gpus = get_nvidia_info()
-
     print_section("GPU")
 
-    if gpus:
+    if gpu["devices"]:
 
         print_item(
             "GPU Count",
-            len(gpus)
+            gpu["count"],
         )
 
-        for index, gpu in enumerate(
-            gpus,
-            start=1
+        for index, device in enumerate(
+            gpu["devices"],
+            start=1,
         ):
 
             print()
 
             print_item(
                 f"GPU {index}",
-                gpu["name"]
+                device["name"],
             )
 
             print_item(
                 "VRAM Total",
-                gpu["vram_total"]
+                device["vram_total"],
             )
 
             print_item(
                 "VRAM Used",
-                gpu["vram_used"]
+                device["vram_used"],
             )
 
             print_item(
                 "VRAM Free",
-                gpu["vram_free"]
+                device["vram_free"],
             )
 
             print_item(
                 "Driver",
-                gpu["driver"]
+                device["driver"],
             )
 
             print_item(
                 "Compute Capability",
-                gpu["compute_capability"]
+                device["compute_capability"],
             )
 
-        cuda = get_cuda_version()
-
-        if cuda:
+        if gpu["cuda_version"]:
 
             print_item(
                 "CUDA",
-                cuda
+                gpu["cuda_version"],
             )
 
     else:
 
         print_item(
             "NVIDIA GPU",
-            "Not detected"
+            "Not detected",
         )
 
     # --------------------------------------------------------
     # Storage
     # --------------------------------------------------------
-
-    storage = get_storage_info()
 
     print_section("STORAGE")
 
@@ -751,24 +878,40 @@ def main():
 
             print_item(
                 drive["drive"],
-                f"{format_gb(drive['free'])} free / "
-                f"{format_gb(drive['total'])} total"
+                f"{drive['free_gb']:.1f} GB free / "
+                f"{drive['total_gb']:.1f} GB total",
             )
 
     else:
 
         print_item(
             "Storage",
-            "Not detected"
+            "Not detected",
         )
-
-    # --------------------------------------------------------
-    # Finish
-    # --------------------------------------------------------
 
     print()
     print("└─ System scan completed")
     print()
+
+
+# ============================================================
+# Main
+# ============================================================
+
+def main():
+
+    try:
+
+        profile = scan_system()
+
+        display_system_info(profile)
+
+    except Exception as error:
+
+        print()
+        print("System scan failed.")
+        print(f"Error: {error}")
+        print()
 
 
 # ============================================================
