@@ -2,6 +2,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from core.logging import write_log
+
 
 def run_command(command):
     return subprocess.run(
@@ -68,10 +70,32 @@ def add_model(
         )
 
     if result.returncode != 0:
+        write_log(
+            level="ERROR",
+            component="ollama/model",
+            action="add",
+            message="Failed to add model",
+            details={
+                "model": model_name,
+                "error": result.stderr.strip(),
+            },
+        )
+
         raise RuntimeError(
             result.stderr.strip()
             or f"Failed to add model: {model_name}"
         )
+
+    write_log(
+        level="INFO",
+        component="ollama/model",
+        action="add",
+        message="Model added successfully",
+        details={
+            "model": model_name,
+            "path": str(model_file),
+        },
+    )
 
     return result.stdout.strip()
 
@@ -86,10 +110,31 @@ def remove_model(model: str):
     )
 
     if result.returncode != 0:
+        write_log(
+            level="ERROR",
+            component="ollama/model",
+            action="remove",
+            message="Failed to remove model",
+            details={
+                "model": model,
+                "error": result.stderr.strip(),
+            },
+        )
+
         raise RuntimeError(
             result.stderr.strip()
             or f"Failed to remove model: {model}"
         )
+
+    write_log(
+        level="INFO",
+        component="ollama/model",
+        action="remove",
+        message="Model removed successfully",
+        details={
+            "model": model,
+        },
+    )
 
     return result.stdout.strip()
 
@@ -108,10 +153,32 @@ def run_model(
     )
 
     if result.returncode != 0:
+        write_log(
+            level="ERROR",
+            component="ollama/model",
+            action="run",
+            message="Failed to run model",
+            details={
+                "model": model,
+                "error": result.stderr.strip(),
+            },
+        )
+
         raise RuntimeError(
             result.stderr.strip()
             or f"Failed to run model: {model}"
         )
+
+    write_log(
+        level="INFO",
+        component="ollama/model",
+        action="run",
+        message="Model executed successfully",
+        details={
+            "model": model,
+            "prompt_length": len(prompt),
+        },
+    )
 
     return result.stdout.strip()
 
@@ -126,10 +193,31 @@ def stop_model(model: str):
     )
 
     if result.returncode != 0:
+        write_log(
+            level="ERROR",
+            component="ollama/model",
+            action="stop",
+            message="Failed to stop model",
+            details={
+                "model": model,
+                "error": result.stderr.strip(),
+            },
+        )
+
         raise RuntimeError(
             result.stderr.strip()
             or f"Failed to stop model: {model}"
         )
+
+    write_log(
+        level="INFO",
+        component="ollama/model",
+        action="stop",
+        message="Model stopped successfully",
+        details={
+            "model": model,
+        },
+    )
 
     return result.stdout.strip()
 
@@ -189,9 +277,32 @@ def configure_model(
         )
 
     if result.returncode != 0:
+        write_log(
+            level="ERROR",
+            component="ollama/model",
+            action="configure",
+            message="Failed to configure model",
+            details={
+                "model": model,
+                "error": result.stderr.strip(),
+            },
+        )
+
         raise RuntimeError(
             result.stderr.strip()
             or f"Failed to configure model: {model}"
         )
+
+    write_log(
+        level="INFO",
+        component="ollama/model",
+        action="configure",
+        message="Model configured successfully",
+        details={
+            "model": model,
+            "temperature": temperature,
+            "context_length": context_length,
+        },
+    )
 
     return result.stdout.strip()
