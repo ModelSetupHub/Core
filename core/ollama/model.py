@@ -6,6 +6,10 @@ from core.logging import write_log
 
 
 def run_command(command):
+    """
+    Execute an Ollama command.
+    """
+
     return subprocess.run(
         command,
         capture_output=True,
@@ -17,6 +21,10 @@ def run_command(command):
 
 
 def list_models():
+    """
+    List installed Ollama models.
+    """
+
     result = run_command(
         ["ollama", "list"]
     )
@@ -25,6 +33,10 @@ def list_models():
 
 
 def show_model_info(model: str):
+    """
+    Show information about a model.
+    """
+
     result = run_command(
         ["ollama", "show", model]
     )
@@ -42,6 +54,10 @@ def add_model(
     model_name: str,
     model_path: str,
 ):
+    """
+    Add a local model to Ollama.
+    """
+
     model_file = Path(
         model_path
     ).expanduser().resolve()
@@ -101,6 +117,10 @@ def add_model(
 
 
 def remove_model(model: str):
+    """
+    Remove a model from Ollama.
+    """
+
     result = run_command(
         [
             "ollama",
@@ -143,6 +163,10 @@ def run_model(
     model: str,
     prompt: str,
 ):
+    """
+    Run a prompt using a model.
+    """
+
     result = run_command(
         [
             "ollama",
@@ -184,6 +208,10 @@ def run_model(
 
 
 def stop_model(model: str):
+    """
+    Stop a running model.
+    """
+
     result = run_command(
         [
             "ollama",
@@ -223,6 +251,10 @@ def stop_model(model: str):
 
 
 def list_running_models():
+    """
+    List currently running models.
+    """
+
     result = run_command(
         ["ollama", "ps"]
     )
@@ -235,6 +267,10 @@ def configure_model(
     temperature: float | None = None,
     context_length: int | None = None,
 ):
+    """
+    Configure model parameters.
+    """
+
     parameters = []
 
     if temperature is not None:
