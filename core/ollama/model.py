@@ -7,7 +7,7 @@ import json
 from core.logging import write_log
 
 
-def run_command(command):
+def _run_command(command):
     """
     Execute an Ollama command.
     """
@@ -27,7 +27,7 @@ def list_models():
     List installed Ollama models.
     """
 
-    result = run_command(
+    result = _run_command(
         ["ollama", "list"]
     )
 
@@ -39,7 +39,7 @@ def show_model_info(model: str):
     Show information about a model.
     """
 
-    result = run_command(
+    result = _run_command(
         ["ollama", "show", model]
     )
 
@@ -77,7 +77,7 @@ def add_model(
             encoding="utf-8",
         )
 
-        result = run_command(
+        result = _run_command(
             [
                 "ollama",
                 "create",
@@ -123,7 +123,7 @@ def remove_model(model: str):
     Remove a model from Ollama.
     """
 
-    result = run_command(
+    result = _run_command(
         [
             "ollama",
             "rm",
@@ -169,7 +169,7 @@ def run_model(
     Run a prompt using a model.
     """
 
-    result = run_command(
+    result = _run_command(
         [
             "ollama",
             "run",
@@ -214,7 +214,7 @@ def stop_model(model: str):
     Stop a running model.
     """
 
-    result = run_command(
+    result = _run_command(
         [
             "ollama",
             "stop",
@@ -411,7 +411,7 @@ def list_running_models():
     List currently running models.
     """
 
-    result = run_command(
+    result = _run_command(
         ["ollama", "ps"]
     )
 
@@ -478,7 +478,7 @@ def configure_model(
             encoding="utf-8",
         )
 
-        result = run_command(
+        result = _run_command(
             [
                 "ollama",
                 "create",
