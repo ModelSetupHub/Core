@@ -419,24 +419,24 @@ def list_running_models():
 
 
 def configure_model(
-    model: str,
-    temperature: float | None = None,
-    context_length: int | None = None,
+    source_model: str,
+    target_model: str,
+    parameters: dict,
 ):
     """
-    Configure model parameters.
+    Create a new configured model from an existing model.
+
+    The source model is not modified.
     """
 
-    parameters = []
-
-    if temperature is not None:
-        parameters.append(
-            f"PARAMETER temperature {temperature}"
+    if not source_model.strip():
+        raise ValueError(
+            "Source model name is required"
         )
 
-    if context_length is not None:
-        parameters.append(
-            f"PARAMETER num_ctx {context_length}"
+    if not target_model.strip():
+        raise ValueError(
+            "Target model name is required"
         )
 
     if not parameters:
@@ -444,12 +444,32 @@ def configure_model(
             "At least one configuration parameter is required"
         )
 
+    if not isinstance(parameters, dict):
+        raise TypeError(
+            "Parameters must be a dictionary"
+        )
+
+    modelfile_parameters = []
+
+    for key, value in parameters.items():
+        if value is None:
+            continue
+
+        modelfile_parameters.append(
+            f"PARAMETER {key} {value}"
+        )
+
+    if not modelfile_parameters:
+        raise ValueError(
+            "No valid configuration parameters found"
+        )
+
     with tempfile.TemporaryDirectory() as temp_dir:
         modelfile = Path(temp_dir) / "Modelfile"
 
         content = (
-            f"FROM {model}\n"
-            + "\n".join(parameters)
+            f"FROM {source_model}\n"
+            + "\n".join(modelfile_parameters)
             + "\n"
         )
 
@@ -462,7 +482,7 @@ def configure_model(
             [
                 "ollama",
                 "create",
-                model,
+                target_model,
                 "-f",
                 str(modelfile),
             ]
@@ -473,27 +493,28 @@ def configure_model(
             level="ERROR",
             component="ollama/model",
             action="configure",
-            message="Failed to configure model",
+            message="Failed to create configured model",
             details={
-                "model": model,
+                "source_model": source_model,
+                "target_model": target_model,
                 "error": result.stderr.strip(),
             },
         )
 
         raise RuntimeError(
             result.stderr.strip()
-            or f"Failed to configure model: {model}"
+            or f"Failed to configure model: {target_model}"
         )
 
     write_log(
         level="INFO",
         component="ollama/model",
         action="configure",
-        message="Model configured successfully",
+        message="Configured model created successfully",
         details={
-            "model": model,
-            "temperature": temperature,
-            "context_length": context_length,
+            "source_model": source_model,
+            "target_model": target_model,
+            "parameters": parameters,
         },
     )
 
