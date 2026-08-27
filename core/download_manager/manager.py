@@ -164,8 +164,6 @@ class DownloadManager:
         self._running = True
         self._cancelled = False
 
-        self._show_keyboard_help()
-
         write_log(
             level="INFO",
             component=COMPONENT,
@@ -195,31 +193,6 @@ class DownloadManager:
             )
 
             self._keyboard_thread.start()
-
-    # ========================================================
-    # Help
-    # ========================================================
-
-    @staticmethod
-    def _show_keyboard_help() -> None:
-
-        print()
-        print("=" * 68)
-        print("                       DOWNLOAD MANAGER")
-        print("=" * 68)
-        print()
-        print(" Keyboard shortcuts")
-        print()
-        print("   P  Pause / Resume current download")
-        print("   S  Skip current file")
-        print("   C  Cancel download manager")
-        print("   Q  Quit / Cancel download manager")
-        print()
-        print(" Downloads are processed sequentially.")
-        print(" A .part file is used for interrupted downloads.")
-        print()
-        print("=" * 68)
-        print()
 
     # ========================================================
     # Worker
@@ -252,11 +225,7 @@ class DownloadManager:
                 item["status"] = "downloading"
                 item["error"] = None
 
-                print()
-                print(
-                    f"[{index + 1}/{total_files}] "
-                    f"Preparing: {filename}"
-                )
+
 
                 write_log(
                     level="INFO",
@@ -335,10 +304,6 @@ class DownloadManager:
 
                     item["status"] = "completed"
 
-                    print(
-                        f"\n[OK] Completed: "
-                        f"{filename}"
-                    )
 
                     write_log(
                         level="INFO",
@@ -407,10 +372,6 @@ class DownloadManager:
                     item["status"] = "failed"
                     item["error"] = str(error)
 
-                    print(
-                        f"\n[ERROR] Failed: "
-                        f"{filename}"
-                    )
 
                     write_log(
                         level="ERROR",
@@ -487,11 +448,6 @@ class DownloadManager:
 
             self._running = False
 
-            print()
-            print("=" * 68)
-            print("Download manager finished.")
-            print("=" * 68)
-
     # ========================================================
     # Status Events
     # ========================================================
@@ -508,10 +464,6 @@ class DownloadManager:
         if status == "connecting":
 
             item["status"] = "connecting"
-
-            print(
-                "  Connecting to server..."
-            )
 
             write_log(
                 level="INFO",
@@ -533,10 +485,6 @@ class DownloadManager:
             )
 
         elif status == "connected":
-
-            print(
-                "  Server connected."
-            )
 
             write_log(
                 level="INFO",
@@ -570,10 +518,6 @@ class DownloadManager:
         elif status == "paused":
 
             item["status"] = "paused"
-
-            print(
-                "\n  [PAUSED]"
-            )
 
             write_log(
                 level="INFO",
@@ -615,16 +559,6 @@ class DownloadManager:
                 details.get("error")
                 if details
                 else None
-            )
-
-            print()
-            print(
-                f"  [RETRY] "
-                f"Attempt {attempt}/{max_retries}"
-            )
-
-            print(
-                f"  Waiting {retry_in}s..."
             )
 
             write_log(
@@ -771,19 +705,6 @@ class DownloadManager:
 
                 eta = "--:--"
 
-            with self._progress_lock:
-
-                print(
-                    f"\r[{bar}] "
-                    f"{percentage:6.2f}% "
-                    f"{downloaded_mb:8.1f}/"
-                    f"{total_mb:8.1f} MB "
-                    f"{speed_mb:6.2f} MB/s "
-                    f"ETA {eta}",
-                    end="",
-                    flush=True,
-                )
-
         else:
 
             downloaded_mb = (
@@ -798,16 +719,6 @@ class DownloadManager:
                 / 1024
             )
 
-            with self._progress_lock:
-
-                print(
-                    f"\rDownloaded: "
-                    f"{downloaded_mb:.1f} MB "
-                    f"at "
-                    f"{speed_mb:.2f} MB/s",
-                    end="",
-                    flush=True,
-                )
 
     # ========================================================
     # Skip
@@ -826,9 +737,6 @@ class DownloadManager:
             "filename"
         ]
 
-        print(
-            f"\n[SKIPPED] {filename}"
-        )
 
         write_log(
             level="INFO",
@@ -912,10 +820,6 @@ class DownloadManager:
             },
         )
 
-        print(
-            "\n[PAUSED] "
-            "Press P to resume."
-        )
 
     # ========================================================
     # Resume
@@ -946,9 +850,6 @@ class DownloadManager:
             },
         )
 
-        print(
-            "\n[RESUMED]"
-        )
 
     # ========================================================
     # Skip
@@ -1005,11 +906,6 @@ class DownloadManager:
                 "file_index":
                     self._current_index + 1,
             },
-        )
-
-        print(
-            "\n[CANCEL] "
-            "Stopping download manager..."
         )
 
     # ========================================================
