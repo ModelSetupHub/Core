@@ -1,4 +1,5 @@
 __pycache__
 data
-test_download_manager.py
+test.py
 .vscode
+.venv
