@@ -1,24 +1,35 @@
-import subprocess
+"""Package management and Python script authoring and execution utilities."""
+
 from pathlib import Path
+import subprocess
 
 from core.logging import write_log
-from .environment import get_python_path
+from core.python.environment import get_python_path
+
+COMPONENT = "python"
 
 
 def install_packages(
     packages: list[str],
     environment: str | None = None,
-):
-    """Install Python packages."""
+) -> str:
+    """Install one or more Python packages via pip.
 
+    Args:
+        packages: List of package names or version specifiers.
+        environment: Optional path to the virtual environment.
+
+    Returns:
+        str: Output text from pip install.
+
+    Raises:
+        ValueError: If packages list is empty.
+        RuntimeError: If pip install returns a non-zero exit code.
+    """
     if not packages:
-        raise ValueError(
-            "At least one package is required"
-        )
+        raise ValueError("At least one package is required")
 
-    python_path = get_python_path(
-        environment
-    )
+    python_path = get_python_path(environment)
 
     result = subprocess.run(
         [
@@ -37,13 +48,12 @@ def install_packages(
 
     if result.returncode != 0:
         raise RuntimeError(
-            result.stderr.strip()
-            or "Failed to install packages"
+            result.stderr.strip() or "Failed to install packages"
         )
 
     write_log(
         level="INFO",
-        component="python",
+        component=COMPONENT,
         action="install_packages",
         message="Packages installed successfully",
         details={
@@ -58,12 +68,20 @@ def install_packages(
 def uninstall_packages(
     packages: list[str],
     environment: str | None = None,
-):
-    """Uninstall Python packages."""
+) -> str:
+    """Uninstall one or more Python packages via pip.
 
-    python_path = get_python_path(
-        environment
-    )
+    Args:
+        packages: List of package names to uninstall.
+        environment: Optional path to the virtual environment.
+
+    Returns:
+        str: Output text from pip uninstall.
+
+    Raises:
+        RuntimeError: If pip uninstall fails.
+    """
+    python_path = get_python_path(environment)
 
     result = subprocess.run(
         [
@@ -83,13 +101,12 @@ def uninstall_packages(
 
     if result.returncode != 0:
         raise RuntimeError(
-            result.stderr.strip()
-            or "Failed to uninstall packages"
+            result.stderr.strip() or "Failed to uninstall packages"
         )
 
     write_log(
         level="INFO",
-        component="python",
+        component=COMPONENT,
         action="uninstall_packages",
         message="Packages uninstalled successfully",
         details={
@@ -103,12 +120,19 @@ def uninstall_packages(
 
 def list_packages(
     environment: str | None = None,
-):
-    """List installed Python packages."""
+) -> str:
+    """List installed Python packages in the selected environment.
 
-    python_path = get_python_path(
-        environment
-    )
+    Args:
+        environment: Optional path to the virtual environment.
+
+    Returns:
+        str: Output text from pip list.
+
+    Raises:
+        RuntimeError: If pip list fails.
+    """
+    python_path = get_python_path(environment)
 
     result = subprocess.run(
         [
@@ -126,8 +150,7 @@ def list_packages(
 
     if result.returncode != 0:
         raise RuntimeError(
-            result.stderr.strip()
-            or "Failed to list packages"
+            result.stderr.strip() or "Failed to list packages"
         )
 
     return result.stdout.strip()
@@ -136,17 +159,23 @@ def list_packages(
 def create_script(
     path: str,
     content: str,
-):
-    """Create Python script."""
+) -> str:
+    """Create a new Python script file on disk.
 
-    script = Path(
-        path
-    ).expanduser().resolve()
+    Args:
+        path: Target file path to write script to.
+        content: Text content of the Python script.
+
+    Returns:
+        str: Absolute path to the created script.
+
+    Raises:
+        FileExistsError: If the script file already exists.
+    """
+    script = Path(path).expanduser().resolve()
 
     if script.exists():
-        raise FileExistsError(
-            f"Script already exists: {script}"
-        )
+        raise FileExistsError(f"Script already exists: {script}")
 
     script.parent.mkdir(
         parents=True,
@@ -160,7 +189,7 @@ def create_script(
 
     write_log(
         level="INFO",
-        component="python",
+        component=COMPONENT,
         action="create_script",
         message="Script created successfully",
         details={
@@ -174,17 +203,23 @@ def create_script(
 def edit_script(
     path: str,
     content: str,
-):
-    """Edit Python script."""
+) -> str:
+    """Overwrite the contents of an existing Python script file.
 
-    script = Path(
-        path
-    ).expanduser().resolve()
+    Args:
+        path: Target script file path to edit.
+        content: New text content to write.
+
+    Returns:
+        str: Absolute path to the updated script.
+
+    Raises:
+        FileNotFoundError: If the script file does not exist.
+    """
+    script = Path(path).expanduser().resolve()
 
     if not script.is_file():
-        raise FileNotFoundError(
-            f"Script not found: {script}"
-        )
+        raise FileNotFoundError(f"Script not found: {script}")
 
     script.write_text(
         content,
@@ -193,7 +228,7 @@ def edit_script(
 
     write_log(
         level="INFO",
-        component="python",
+        component=COMPONENT,
         action="edit_script",
         message="Script updated successfully",
         details={
@@ -204,23 +239,28 @@ def edit_script(
     return str(script)
 
 
-def delete_script(path: str):
-    """Delete Python script."""
+def delete_script(path: str) -> str:
+    """Delete a Python script file from disk.
 
-    script = Path(
-        path
-    ).expanduser().resolve()
+    Args:
+        path: Path to the script file to remove.
+
+    Returns:
+        str: Absolute path of the deleted script.
+
+    Raises:
+        FileNotFoundError: If the script file does not exist.
+    """
+    script = Path(path).expanduser().resolve()
 
     if not script.is_file():
-        raise FileNotFoundError(
-            f"Script not found: {script}"
-        )
+        raise FileNotFoundError(f"Script not found: {script}")
 
     script.unlink()
 
     write_log(
         level="INFO",
-        component="python",
+        component=COMPONENT,
         action="delete_script",
         message="Script deleted successfully",
         details={
@@ -234,21 +274,26 @@ def delete_script(path: str):
 def run_script(
     path: str,
     environment: str | None = None,
-):
-    """Run Python script."""
+) -> str:
+    """Execute a Python script using the specified environment.
 
-    script = Path(
-        path
-    ).expanduser().resolve()
+    Args:
+        path: Path to the Python script to execute.
+        environment: Optional path to the virtual environment.
+
+    Returns:
+        str: Standard output from the script execution.
+
+    Raises:
+        FileNotFoundError: If the script file does not exist.
+        RuntimeError: If script execution fails with non-zero exit code.
+    """
+    script = Path(path).expanduser().resolve()
 
     if not script.is_file():
-        raise FileNotFoundError(
-            f"Script not found: {script}"
-        )
+        raise FileNotFoundError(f"Script not found: {script}")
 
-    python_path = get_python_path(
-        environment
-    )
+    python_path = get_python_path(environment)
 
     result = subprocess.run(
         [
@@ -264,13 +309,12 @@ def run_script(
 
     if result.returncode != 0:
         raise RuntimeError(
-            result.stderr.strip()
-            or f"Failed to run script: {script}"
+            result.stderr.strip() or f"Failed to run script: {script}"
         )
 
     write_log(
         level="INFO",
-        component="python",
+        component=COMPONENT,
         action="run_script",
         message="Script executed successfully",
         details={

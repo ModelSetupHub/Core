@@ -1,16 +1,29 @@
+"""Python virtual environment lifecycle management."""
+
+from pathlib import Path
+import shutil
 import subprocess
 import sys
-from pathlib import Path
 
 from core.logging import write_log
 
+COMPONENT = "python"
 
-def create_environment(path: str):
-    """Create Python virtual environment."""
 
-    environment = Path(
-        path
-    ).expanduser().resolve()
+def create_environment(path: str) -> str:
+    """Create a new isolated Python virtual environment.
+
+    Args:
+        path: Filesystem path where the virtual environment will be created.
+
+    Returns:
+        str: Resolved absolute path to the created virtual environment.
+
+    Raises:
+        FileExistsError: If the target environment path already exists.
+        RuntimeError: If virtual environment creation fails.
+    """
+    environment = Path(path).expanduser().resolve()
 
     if environment.exists():
         raise FileExistsError(
@@ -34,7 +47,7 @@ def create_environment(path: str):
     if result.returncode != 0:
         write_log(
             level="ERROR",
-            component="python",
+            component=COMPONENT,
             action="create_environment",
             message="Failed to create environment",
             details={
@@ -42,7 +55,6 @@ def create_environment(path: str):
                 "error": result.stderr.strip(),
             },
         )
-
         raise RuntimeError(
             result.stderr.strip()
             or f"Failed to create environment: {environment}"
@@ -50,7 +62,7 @@ def create_environment(path: str):
 
     write_log(
         level="INFO",
-        component="python",
+        component=COMPONENT,
         action="create_environment",
         message="Environment created successfully",
         details={
@@ -61,25 +73,25 @@ def create_environment(path: str):
     return str(environment)
 
 
-def remove_environment(path: str):
-    """Remove Python virtual environment."""
+def remove_environment(path: str) -> None:
+    """Remove an existing Python virtual environment directory recursively.
 
-    environment = Path(
-        path
-    ).expanduser().resolve()
+    Args:
+        path: Filesystem path to the virtual environment to delete.
+
+    Raises:
+        FileNotFoundError: If the virtual environment path does not exist.
+    """
+    environment = Path(path).expanduser().resolve()
 
     if not environment.exists():
-        raise FileNotFoundError(
-            f"Environment not found: {environment}"
-        )
-
-    import shutil
+        raise FileNotFoundError(f"Environment not found: {environment}")
 
     shutil.rmtree(environment)
 
     write_log(
         level="INFO",
-        component="python",
+        component=COMPONENT,
         action="remove_environment",
         message="Environment removed successfully",
         details={
@@ -90,28 +102,27 @@ def remove_environment(path: str):
 
 def get_python_path(
     environment: str | None = None,
-):
-    """Get Python executable path."""
+) -> str:
+    """Get the absolute path to the Python executable.
 
+    Args:
+        environment: Optional path to a virtual environment. If None, current interpreter path is returned.
+
+    Returns:
+        str: Absolute path to the Python interpreter executable.
+
+    Raises:
+        FileNotFoundError: If the Python binary within the environment cannot be found.
+    """
     if environment is None:
         return sys.executable
 
-    environment_path = Path(
-        environment
-    ).expanduser().resolve()
+    environment_path = Path(environment).expanduser().resolve()
 
     if sys.platform == "win32":
-        python_path = (
-            environment_path
-            / "Scripts"
-            / "python.exe"
-        )
+        python_path = environment_path / "Scripts" / "python.exe"
     else:
-        python_path = (
-            environment_path
-            / "bin"
-            / "python"
-        )
+        python_path = environment_path / "bin" / "python"
 
     if not python_path.is_file():
         raise FileNotFoundError(

@@ -1,28 +1,27 @@
-from pathlib import Path
+"""Execution logging module for recording and querying system events."""
+
 from datetime import datetime
 import json
+from pathlib import Path
 
 
-def get_execution_log_path():
+def get_execution_log_path() -> Path:
+    """Return the file path for the execution log.
+
+    The log file is stored inside the repository's data directory:
+        Core/
+        ├── core/
+        │   └── logging.py
+        └── data/
+            └── executions.log
+
+    Creates the data directory if it does not already exist.
+
+    Returns:
+        Path: Absolute path to the execution log file.
     """
-    Returns the execution log file path.
-
-    The log file is stored in the repository data folder:
-
-    Core/
-    ├── core/
-    │   └── logging.py
-    │
-    └── data/
-        └── executions.log
-
-    Creates the data folder if it does not exist.
-    """
-
-    # logging.py is inside core/, so move one level up
-    # to reach the repository root
+    # logging.py is inside core/, so move one level up to reach the repository root
     repo_root = Path(__file__).resolve().parent.parent
-
     data_dir = repo_root / "data"
     data_dir.mkdir(exist_ok=True)
 
@@ -34,42 +33,26 @@ def write_log(
     component: str,
     action: str,
     message: str,
-    details: dict | None = None
-):
-    """
-    Append a new execution event to the log file.
+    details: dict | None = None,
+) -> None:
+    """Append a new execution event to the log file.
+
+    Each log entry is stored as a single line separated by pipe delimiters
+    with structured details encoded in JSON format.
 
     Args:
-        level:
-            Log severity.
-            Examples: INFO, WARNING, ERROR
-
-        component:
-            Part of the system that created the event.
-            Examples: runtime, download, mcp
-
-        action:
-            Operation being executed.
-            Examples: install, start, download
-
-        message:
-            Human-readable description of the event.
-
-        details:
-            Additional structured data related to the event.
-            Stored as JSON.
+        level: Log severity (e.g., 'INFO', 'WARNING', 'ERROR').
+        component: System component originating the event (e.g., 'runtime', 'download').
+        action: Operation being performed (e.g., 'install', 'start', 'download').
+        message: Human-readable description of the log event.
+        details: Optional dictionary containing additional event metadata.
     """
-
     if details is None:
         details = {}
 
-    timestamp = datetime.now().strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Each log entry is stored in one line.
-    # This keeps the file easy to read manually
-    # and simple to parse later.
+    # Each log entry is stored in a single line for simple parsing
     entry = (
         f"{timestamp} | "
         f"{level} | "
@@ -81,37 +64,27 @@ def write_log(
 
     log_file = get_execution_log_path()
 
-    # Append mode keeps previous execution history.
-    with open(
-        log_file,
-        "a",
-        encoding="utf-8"
-    ) as file:
+    with open(log_file, "a", encoding="utf-8") as file:
         file.write(entry)
 
 
 def read_logs(
     level: str | None = None,
     component: str | None = None,
-    action: str | None = None
-):
-    """
-    Read execution logs with optional filters.
+    action: str | None = None,
+) -> list[dict]:
+    """Read execution logs with optional filtering.
 
-    Filters are optional and can be combined.
+    Filters are optional and can be combined to narrow down the query.
 
-    Examples:
-        read_logs(level="ERROR")
-
-        read_logs(
-            component="runtime",
-            action="install"
-        )
+    Args:
+        level: Optional log severity level to filter by (e.g., 'ERROR').
+        component: Optional component name to filter by.
+        action: Optional action name to filter by.
 
     Returns:
-        List of log entries as dictionaries.
+        list[dict]: List of parsed log entry dictionaries matching the criteria.
     """
-
     log_file = get_execution_log_path()
 
     if not log_file.exists():
@@ -119,12 +92,7 @@ def read_logs(
 
     results = []
 
-    with open(
-        log_file,
-        "r",
-        encoding="utf-8"
-    ) as file:
-
+    with open(log_file, "r", encoding="utf-8") as file:
         for line in file:
             parts = line.strip().split(" | ")
 
@@ -139,13 +107,11 @@ def read_logs(
                     "component": parts[2],
                     "action": parts[3],
                     "message": parts[4],
-                    "details": json.loads(parts[5])
+                    "details": json.loads(parts[5]),
                 }
-
             except json.JSONDecodeError:
                 # Skip corrupted log entries
                 continue
-
 
             # Apply filters only when provided
             if level and log_data["level"] != level:

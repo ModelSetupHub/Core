@@ -1,16 +1,16 @@
+"""Ollama process lifecycle and service runtime management."""
+
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import time
 import urllib.error
 import urllib.request
-from pathlib import Path
 
 from core.logging import write_log
 
-
 COMPONENT = "ollama/runtime"
-
 OLLAMA_API_URL = "http://127.0.0.1:11434/api/tags"
 
 START_TIMEOUT = 15.0
@@ -19,19 +19,26 @@ CHECK_INTERVAL = 0.25
 
 
 def _is_installed() -> bool:
-    """Check whether Ollama is installed."""
+    """Check whether the Ollama binary is available on the system PATH.
+
+    Returns:
+        bool: True if 'ollama' executable exists, False otherwise.
+    """
     return shutil.which("ollama") is not None
 
 
 def _is_running() -> bool:
-    """Check whether the Ollama API is running."""
+    """Check whether the Ollama local HTTP API is responding.
+
+    Returns:
+        bool: True if Ollama service API returns HTTP 200, False otherwise.
+    """
     try:
         with urllib.request.urlopen(
             OLLAMA_API_URL,
             timeout=2,
         ) as response:
             return response.status == 200
-
     except (
         urllib.error.URLError,
         TimeoutError,
@@ -44,20 +51,31 @@ def _wait_for_running(
     expected: bool,
     timeout: float,
 ) -> bool:
-    """Wait until Ollama reaches the expected running state."""
+    """Wait until Ollama reaches the target running state.
+
+    Args:
+        expected: Target boolean state (True for running, False for stopped).
+        timeout: Maximum duration to wait in seconds.
+
+    Returns:
+        bool: True if the target state was achieved within the timeout.
+    """
     deadline = time.monotonic() + timeout
 
     while time.monotonic() < deadline:
         if _is_running() == expected:
             return True
-
         time.sleep(CHECK_INTERVAL)
 
     return _is_running() == expected
 
 
 def _get_version() -> str | None:
-    """Get the installed Ollama version."""
+    """Query and parse the installed Ollama version string.
+
+    Returns:
+        str | None: Cleaned version string, or None if detection fails.
+    """
     try:
         result = subprocess.run(
             ["ollama", "--version"],
@@ -66,7 +84,6 @@ def _get_version() -> str | None:
             check=False,
             timeout=5,
         )
-
     except (
         OSError,
         subprocess.SubprocessError,
@@ -77,23 +94,20 @@ def _get_version() -> str | None:
 
     for line in output.splitlines():
         if "client version is" in line:
-            return line.split(
-                "client version is",
-                1,
-            )[1].strip()
+            return line.split("client version is", 1)[1].strip()
 
         if line.startswith("ollama version is"):
-            return line.split(
-                "ollama version is",
-                1,
-            )[1].strip()
+            return line.split("ollama version is", 1)[1].strip()
 
     return None
 
 
 def get_status() -> dict:
-    """Get the current Ollama status."""
+    """Get the current Ollama installation and runtime health status.
 
+    Returns:
+        dict: Status dict containing 'installed', 'running', and 'version'.
+    """
     installed = _is_installed()
 
     if not installed:
@@ -124,13 +138,16 @@ def get_status() -> dict:
 
 
 def install(installer_path: str) -> None:
-    """Install Ollama from a local installer."""
+    """Execute an Ollama standalone installer executable.
 
-    installer = (
-        Path(installer_path)
-        .expanduser()
-        .resolve()
-    )
+    Args:
+        installer_path: Path to the installer file on disk.
+
+    Raises:
+        FileNotFoundError: If the installer binary is not found.
+        Exception: If running the installer fails.
+    """
+    installer = Path(installer_path).expanduser().resolve()
 
     if not installer.is_file():
         write_log(
@@ -142,10 +159,7 @@ def install(installer_path: str) -> None:
                 "path": str(installer),
             },
         )
-
-        raise FileNotFoundError(
-            f"Installer not found: {installer}"
-        )
+        raise FileNotFoundError(f"Installer not found: {installer}")
 
     write_log(
         level="INFO",
@@ -162,7 +176,6 @@ def install(installer_path: str) -> None:
             [str(installer)],
             check=True,
         )
-
     except Exception as error:
         write_log(
             level="ERROR",
@@ -173,7 +186,6 @@ def install(installer_path: str) -> None:
                 "error": str(error),
             },
         )
-
         raise
 
     write_log(
@@ -187,8 +199,14 @@ def install(installer_path: str) -> None:
 def start(
     timeout: float = START_TIMEOUT,
 ) -> None:
-    """Start Ollama and wait until the API is available."""
+    """Start Ollama background server process and wait until API becomes ready.
 
+    Args:
+        timeout: Maximum seconds to wait for API readiness. Defaults to 15.0.
+
+    Raises:
+        RuntimeError: If Ollama is not installed or fails to reach ready state.
+    """
     if not _is_installed():
         raise RuntimeError("Ollama is not installed")
 
@@ -219,7 +237,6 @@ def start(
                 else 0
             ),
         )
-
     except Exception as error:
         write_log(
             level="ERROR",
@@ -242,10 +259,7 @@ def start(
             action="start",
             message="Ollama failed to start",
         )
-
-        raise RuntimeError(
-            f"Ollama did not start within {timeout} seconds"
-        )
+        raise RuntimeError(f"Ollama did not start within {timeout} seconds")
 
     write_log(
         level="INFO",
@@ -258,8 +272,14 @@ def start(
 def stop(
     timeout: float = STOP_TIMEOUT,
 ) -> None:
-    """Stop Ollama and wait until the API is unavailable."""
+    """Terminate the Ollama process and wait until API stops responding.
 
+    Args:
+        timeout: Maximum seconds to wait for shutdown. Defaults to 10.0.
+
+    Raises:
+        RuntimeError: If termination command fails or process does not stop in time.
+    """
     if not _is_installed():
         write_log(
             level="WARNING",
@@ -313,8 +333,7 @@ def stop(
 
         if result.returncode not in (0, 1):
             raise RuntimeError(
-                f"Failed to stop Ollama "
-                f"(exit code: {result.returncode})"
+                f"Failed to stop Ollama (exit code: {result.returncode})"
             )
 
     except Exception as error:
@@ -339,10 +358,7 @@ def stop(
             action="stop",
             message="Ollama failed to stop",
         )
-
-        raise RuntimeError(
-            f"Ollama did not stop within {timeout} seconds"
-        )
+        raise RuntimeError(f"Ollama did not stop within {timeout} seconds")
 
     write_log(
         level="INFO",
@@ -350,3 +366,4 @@ def stop(
         action="stop",
         message="Ollama stopped successfully",
     )
+

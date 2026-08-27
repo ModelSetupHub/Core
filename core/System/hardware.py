@@ -1,3 +1,5 @@
+"""Hardware information collection and diagnostics for system resources."""
+
 import json
 import os
 import platform
@@ -7,9 +9,16 @@ import subprocess
 import psutil
 
 
-def run_command(command, timeout=5):
-    """Run a system command and return stdout."""
+def run_command(command: list[str], timeout: int = 5) -> str | None:
+    """Run a system command and return stripped stdout if successful.
 
+    Args:
+        command: Command list to execute via subprocess.
+        timeout: Maximum execution time in seconds. Defaults to 5.
+
+    Returns:
+        str | None: Stripped stdout output if exit code is 0, otherwise None.
+    """
     try:
         result = subprocess.run(
             command,
@@ -18,56 +27,67 @@ def run_command(command, timeout=5):
             timeout=timeout,
             check=False,
         )
-
         if result.returncode == 0:
             return result.stdout.strip()
-
     except Exception:
         pass
 
     return None
 
 
-def bytes_to_gb(value):
-    """Convert bytes to GB."""
+def bytes_to_gb(value: int | float) -> float:
+    """Convert bytes to gigabytes.
 
+    Args:
+        value: Size in bytes.
+
+    Returns:
+        float: Size in gigabytes (GiB).
+    """
     return value / (1024 ** 3)
 
 
-def format_gb(value):
-    """Format bytes as GB."""
+def format_gb(value: int | float) -> str:
+    """Format bytes as a human-readable gigabyte string.
 
+    Args:
+        value: Size in bytes.
+
+    Returns:
+        str: Formatted string (e.g., '16.0 GB').
+    """
     return f"{bytes_to_gb(value):.1f} GB"
 
 
-def get_system_info():
-    """Get operating system information."""
+def get_system_info() -> dict:
+    """Get operating system identification and version details.
 
+    Returns:
+        dict: Dictionary containing OS name, version, build number, architecture,
+            and Python version.
+    """
     system_name = platform.system()
 
     if system_name == "Windows":
-
         edition = run_command([
             "powershell",
             "-NoProfile",
             "-Command",
-            "(Get-CimInstance Win32_OperatingSystem).Caption"
+            "(Get-CimInstance Win32_OperatingSystem).Caption",
         ])
 
         build = run_command([
             "powershell",
             "-NoProfile",
             "-Command",
-            "(Get-CimInstance Win32_OperatingSystem).BuildNumber"
+            "(Get-CimInstance Win32_OperatingSystem).BuildNumber",
         ])
 
         display_version = run_command([
             "powershell",
             "-NoProfile",
             "-Command",
-            "(Get-ItemProperty "
-            "'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion'"
-            ").DisplayVersion"
+            "(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion').DisplayVersion",
         ])
 
         return {
@@ -87,62 +107,50 @@ def get_system_info():
     }
 
 
-def get_cpu_info():
-    """Get detailed CPU information."""
+def get_cpu_info() -> dict:
+    """Get detailed CPU hardware and clock frequency information.
 
+    Returns:
+        dict: Dictionary containing CPU model name, architecture, physical core count,
+            logical thread count, reported clock speed, current frequency, and max frequency.
+    """
     cpu_name = run_command([
         "powershell",
         "-NoProfile",
         "-Command",
-        "(Get-CimInstance Win32_Processor).Name"
+        "(Get-CimInstance Win32_Processor).Name",
     ])
 
     physical_cores = psutil.cpu_count(logical=False)
     logical_threads = psutil.cpu_count(logical=True)
 
     frequency = psutil.cpu_freq()
-
     current_frequency = "Unknown"
     max_frequency = "Unknown"
 
     if frequency:
-
         if frequency.current:
-            current_frequency = (
-                f"{frequency.current / 1000:.2f} GHz"
-            )
-
+            current_frequency = f"{frequency.current / 1000:.2f} GHz"
         if frequency.max:
-            max_frequency = (
-                f"{frequency.max / 1000:.2f} GHz"
-            )
+            max_frequency = f"{frequency.max / 1000:.2f} GHz"
 
     reported_clock = run_command([
         "powershell",
         "-NoProfile",
         "-Command",
-        "(Get-CimInstance Win32_Processor).MaxClockSpeed"
+        "(Get-CimInstance Win32_Processor).MaxClockSpeed",
     ])
 
     if reported_clock:
-
         try:
-            reported_clock = (
-                f"{int(reported_clock) / 1000:.2f} GHz"
-            )
-
+            reported_clock = f"{int(reported_clock) / 1000:.2f} GHz"
         except ValueError:
             reported_clock = "Unknown"
-
     else:
         reported_clock = "Unknown"
 
     return {
-        "model": (
-            cpu_name
-            or platform.processor()
-            or "Unknown"
-        ),
+        "model": cpu_name or platform.processor() or "Unknown",
         "architecture": platform.machine(),
         "physical_cores": physical_cores or "Unknown",
         "logical_threads": logical_threads or "Unknown",
@@ -152,19 +160,19 @@ def get_cpu_info():
     }
 
 
-def get_cpu_features():
-    """
-    Detect CPU instruction sets where possible.
+def get_cpu_features() -> list[str]:
+    """Detect available CPU instruction set features (e.g., AVX2, AVX-512).
 
     Exact instruction-set detection is platform dependent.
-    """
 
+    Returns:
+        list[str]: List of detected CPU feature and instruction set flags.
+    """
     features = []
 
     if platform.system() == "Linux":
-
         try:
-            with open("/proc/cpuinfo", "r") as file:
+            with open("/proc/cpuinfo", "r", encoding="utf-8") as file:
                 cpuinfo = file.read().lower()
 
             possible_features = [
@@ -177,29 +185,28 @@ def get_cpu_features():
             ]
 
             for display_name, cpu_flag in possible_features:
-
                 if cpu_flag in cpuinfo:
                     features.append(display_name)
-
         except Exception:
             pass
 
     elif platform.system() == "Windows":
-
         architecture = platform.machine().lower()
-
         if architecture in ("amd64", "x86_64"):
             features.append("x86-64")
-
         elif architecture == "arm64":
             features.append("ARM64")
 
     return features
 
 
-def get_memory_info():
-    """Get RAM usage information."""
+def get_memory_info() -> dict:
+    """Get system RAM capacity and utilization statistics.
 
+    Returns:
+        dict: Dictionary containing total, available, used memory in bytes,
+            and usage percentage.
+    """
     memory = psutil.virtual_memory()
 
     return {
@@ -210,11 +217,13 @@ def get_memory_info():
     }
 
 
-def get_ram_modules():
-    """
-    Get physical RAM module information on Windows.
-    """
+def get_ram_modules() -> list[dict]:
+    """Get physical RAM module specifications and slot layout on Windows.
 
+    Returns:
+        list[dict]: List of RAM module dictionaries with manufacturer, part number,
+            capacity, speed, configured speed, memory type, and slot location.
+    """
     if platform.system() != "Windows":
         return []
 
@@ -232,7 +241,7 @@ def get_ram_modules():
                       SMBIOSMemoryType,
                       DeviceLocator |
         ConvertTo-Json -Compress
-        """
+        """,
     ]
 
     output = run_command(command)
@@ -258,59 +267,34 @@ def get_ram_modules():
         modules = []
 
         for module in data:
-
             capacity = module.get("Capacity")
             speed = module.get("Speed")
-            configured_speed = module.get(
-                "ConfiguredClockSpeed"
-            )
-            memory_type = module.get(
-                "SMBIOSMemoryType"
-            )
+            configured_speed = module.get("ConfiguredClockSpeed")
+            memory_type = module.get("SMBIOSMemoryType")
 
             if capacity:
-                capacity_text = (
-                    f"{bytes_to_gb(int(capacity)):.1f} GB"
-                )
+                capacity_text = f"{bytes_to_gb(int(capacity)):.1f} GB"
             else:
                 capacity_text = "Unknown"
 
-            speed_text = (
-                f"{speed} MT/s"
-                if speed
-                else "Unknown"
-            )
-
+            speed_text = f"{speed} MT/s" if speed else "Unknown"
             configured_speed_text = (
-                f"{configured_speed} MT/s"
-                if configured_speed
-                else "Unknown"
+                f"{configured_speed} MT/s" if configured_speed else "Unknown"
             )
 
             ram_type = memory_types.get(
-                int(memory_type)
-                if memory_type
-                else -1,
+                int(memory_type) if memory_type else -1,
                 "Unknown",
             )
 
             modules.append({
-                "manufacturer": (
-                    module.get("Manufacturer")
-                    or "Unknown"
-                ),
-                "part_number": (
-                    module.get("PartNumber")
-                    or "Unknown"
-                ),
+                "manufacturer": module.get("Manufacturer") or "Unknown",
+                "part_number": module.get("PartNumber") or "Unknown",
                 "capacity": capacity_text,
                 "speed": speed_text,
                 "configured_speed": configured_speed_text,
                 "type": ram_type,
-                "slot": (
-                    module.get("DeviceLocator")
-                    or "Unknown"
-                ),
+                "slot": module.get("DeviceLocator") or "Unknown",
             })
 
         return modules
@@ -319,24 +303,28 @@ def get_ram_modules():
         return []
 
 
-def get_memory_channels():
-    """
-    Determine memory channel configuration.
+def get_memory_channels() -> str:
+    """Determine the memory channel configuration.
 
-    WMI does not expose this reliably across all systems.
-    """
+    WMI does not expose this reliably across all hardware configurations.
 
+    Returns:
+        str: Channel topology description or 'Unknown'.
+    """
     return "Unknown"
+
 
 # ============================================================
 # NVIDIA GPU
 # ============================================================
 
-def get_nvidia_info():
-    """
-    Get NVIDIA GPU information using nvidia-smi.
-    """
+def get_nvidia_info() -> list[dict]:
+    """Get NVIDIA GPU device information and memory stats using nvidia-smi.
 
+    Returns:
+        list[dict]: List of GPU dictionaries containing name, driver version,
+            vram total/used/free, and compute capability.
+    """
     command = [
         "nvidia-smi",
         "--query-gpu="
@@ -357,11 +345,7 @@ def get_nvidia_info():
     gpus = []
 
     for line in output.splitlines():
-
-        parts = [
-            item.strip()
-            for item in line.split(",")
-        ]
+        parts = [item.strip() for item in line.split(",")]
 
         if len(parts) < 6:
             continue
@@ -378,27 +362,22 @@ def get_nvidia_info():
     return gpus
 
 
-def get_cuda_version():
-    """Get CUDA version reported by NVIDIA driver."""
+def get_cuda_version() -> str | None:
+    """Get the CUDA version reported by the NVIDIA driver.
 
+    Returns:
+        str | None: Installed CUDA version string (e.g., '12.2') or None.
+    """
     output = run_command(["nvidia-smi"])
 
     if not output:
         return None
 
     for line in output.splitlines():
-
         if "CUDA Version" in line:
-
             try:
-
-                value = line.split(
-                    "CUDA Version:",
-                    1
-                )[1]
-
+                value = line.split("CUDA Version:", 1)[1]
                 return value.strip().split()[0]
-
             except Exception:
                 pass
 
@@ -409,51 +388,40 @@ def get_cuda_version():
 # Storage
 # ============================================================
 
-def get_storage_info():
-    """Get storage information for mounted drives."""
+def get_storage_info() -> list[dict]:
+    """Get storage drive metrics and disk usage for mounted filesystems.
 
+    Returns:
+        list[dict]: List of drive dictionaries with drive path, total bytes,
+            used bytes, and free bytes.
+    """
     drives = []
 
     if platform.system() == "Windows":
-
         for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
-
             drive = f"{letter}:\\"
-
             if not os.path.exists(drive):
                 continue
 
             try:
-
-                total, used, free = (
-                    shutil.disk_usage(drive)
-                )
-
+                total, used, free = shutil.disk_usage(drive)
                 drives.append({
                     "drive": drive,
                     "total": total,
                     "used": used,
                     "free": free,
                 })
-
             except Exception:
                 pass
-
     else:
-
         try:
-
-            total, used, free = (
-                shutil.disk_usage("/")
-            )
-
+            total, used, free = shutil.disk_usage("/")
             drives.append({
                 "drive": "/",
                 "total": total,
                 "used": used,
                 "free": free,
             })
-
         except Exception:
             pass
 

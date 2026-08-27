@@ -1,17 +1,26 @@
+"""Ollama model lifecycle management, configuration, and execution."""
+
+import json
+from pathlib import Path
 import subprocess
 import tempfile
-from pathlib import Path
-import urllib
-import json
+import urllib.error
+import urllib.request
 
 from core.logging import write_log
 
+COMPONENT = "ollama/model"
 
-def _run_command(command):
-    """
-    Execute an Ollama command.
-    """
 
+def _run_command(command: list[str]) -> subprocess.CompletedProcess:
+    """Execute an Ollama CLI subprocess command.
+
+    Args:
+        command: List of command arguments.
+
+    Returns:
+        subprocess.CompletedProcess: Execution result containing returncode, stdout, and stderr.
+    """
     return subprocess.run(
         command,
         capture_output=True,
@@ -22,26 +31,29 @@ def _run_command(command):
     )
 
 
-def list_models():
-    """
-    List installed Ollama models.
-    """
+def list_models() -> str:
+    """List installed Ollama models via CLI.
 
-    result = _run_command(
-        ["ollama", "list"]
-    )
-
+    Returns:
+        str: Output text from 'ollama list'.
+    """
+    result = _run_command(["ollama", "list"])
     return result.stdout.strip()
 
 
-def show_model_info(model: str):
-    """
-    Show information about a model.
-    """
+def show_model_info(model: str) -> str:
+    """Show metadata and layer information for an installed model.
 
-    result = _run_command(
-        ["ollama", "show", model]
-    )
+    Args:
+        model: Model name or tag.
+
+    Returns:
+        str: Detailed model information output from 'ollama show'.
+
+    Raises:
+        RuntimeError: If the model cannot be found or CLI command fails.
+    """
+    result = _run_command(["ollama", "show", model])
 
     if result.returncode != 0:
         raise RuntimeError(
@@ -55,42 +67,44 @@ def show_model_info(model: str):
 def add_model(
     model_name: str,
     model_path: str,
-):
-    """
-    Add a local model to Ollama.
-    """
+) -> str:
+    """Import and register a local GGUF/model file into Ollama.
 
-    model_file = Path(
-        model_path
-    ).expanduser().resolve()
+    Args:
+        model_name: Desired model identifier name in Ollama.
+        model_path: Local filesystem path to the model file.
+
+    Returns:
+        str: Ollama CLI output upon successful creation.
+
+    Raises:
+        FileNotFoundError: If the specified model file does not exist.
+        RuntimeError: If Ollama fails to create the model.
+    """
+    model_file = Path(model_path).expanduser().resolve()
 
     if not model_file.is_file():
-        raise FileNotFoundError(
-            f"Model file not found: {model_file}"
-        )
+        raise FileNotFoundError(f"Model file not found: {model_file}")
 
     with tempfile.TemporaryDirectory() as temp_dir:
         modelfile = Path(temp_dir) / "Modelfile"
-
         modelfile.write_text(
             f"FROM {model_file}\n",
             encoding="utf-8",
         )
 
-        result = _run_command(
-            [
-                "ollama",
-                "create",
-                model_name,
-                "-f",
-                str(modelfile),
-            ]
-        )
+        result = _run_command([
+            "ollama",
+            "create",
+            model_name,
+            "-f",
+            str(modelfile),
+        ])
 
     if result.returncode != 0:
         write_log(
             level="ERROR",
-            component="ollama/model",
+            component=COMPONENT,
             action="add",
             message="Failed to add model",
             details={
@@ -98,15 +112,13 @@ def add_model(
                 "error": result.stderr.strip(),
             },
         )
-
         raise RuntimeError(
-            result.stderr.strip()
-            or f"Failed to add model: {model_name}"
+            result.stderr.strip() or f"Failed to add model: {model_name}"
         )
 
     write_log(
         level="INFO",
-        component="ollama/model",
+        component=COMPONENT,
         action="add",
         message="Model added successfully",
         details={
@@ -118,23 +130,28 @@ def add_model(
     return result.stdout.strip()
 
 
-def remove_model(model: str):
-    """
-    Remove a model from Ollama.
-    """
+def remove_model(model: str) -> str:
+    """Delete a model from local Ollama storage.
 
-    result = _run_command(
-        [
-            "ollama",
-            "rm",
-            model,
-        ]
-    )
+    Args:
+        model: Model name to remove.
+
+    Returns:
+        str: Output text from 'ollama rm'.
+
+    Raises:
+        RuntimeError: If removal fails.
+    """
+    result = _run_command([
+        "ollama",
+        "rm",
+        model,
+    ])
 
     if result.returncode != 0:
         write_log(
             level="ERROR",
-            component="ollama/model",
+            component=COMPONENT,
             action="remove",
             message="Failed to remove model",
             details={
@@ -142,15 +159,13 @@ def remove_model(model: str):
                 "error": result.stderr.strip(),
             },
         )
-
         raise RuntimeError(
-            result.stderr.strip()
-            or f"Failed to remove model: {model}"
+            result.stderr.strip() or f"Failed to remove model: {model}"
         )
 
     write_log(
         level="INFO",
-        component="ollama/model",
+        component=COMPONENT,
         action="remove",
         message="Model removed successfully",
         details={
@@ -164,24 +179,30 @@ def remove_model(model: str):
 def run_model(
     model: str,
     prompt: str,
-):
-    """
-    Run a prompt using a model.
-    """
+) -> str:
+    """Run a prompt directly against an Ollama model via CLI.
 
-    result = _run_command(
-        [
-            "ollama",
-            "run",
-            model,
-            prompt,
-        ]
-    )
+    Args:
+        model: Target model name.
+        prompt: Input text prompt.
+
+    Returns:
+        str: Generated output text.
+
+    Raises:
+        RuntimeError: If execution fails.
+    """
+    result = _run_command([
+        "ollama",
+        "run",
+        model,
+        prompt,
+    ])
 
     if result.returncode != 0:
         write_log(
             level="ERROR",
-            component="ollama/model",
+            component=COMPONENT,
             action="run",
             message="Failed to run model",
             details={
@@ -189,15 +210,13 @@ def run_model(
                 "error": result.stderr.strip(),
             },
         )
-
         raise RuntimeError(
-            result.stderr.strip()
-            or f"Failed to run model: {model}"
+            result.stderr.strip() or f"Failed to run model: {model}"
         )
 
     write_log(
         level="INFO",
-        component="ollama/model",
+        component=COMPONENT,
         action="run",
         message="Model executed successfully",
         details={
@@ -209,23 +228,28 @@ def run_model(
     return result.stdout.strip()
 
 
-def stop_model(model: str):
-    """
-    Stop a running model.
-    """
+def stop_model(model: str) -> str:
+    """Unload or stop a running model from memory.
 
-    result = _run_command(
-        [
-            "ollama",
-            "stop",
-            model,
-        ]
-    )
+    Args:
+        model: Running model name to stop.
+
+    Returns:
+        str: Output text from 'ollama stop'.
+
+    Raises:
+        RuntimeError: If stopping the model fails.
+    """
+    result = _run_command([
+        "ollama",
+        "stop",
+        model,
+    ])
 
     if result.returncode != 0:
         write_log(
             level="ERROR",
-            component="ollama/model",
+            component=COMPONENT,
             action="stop",
             message="Failed to stop model",
             details={
@@ -233,15 +257,13 @@ def stop_model(model: str):
                 "error": result.stderr.strip(),
             },
         )
-
         raise RuntimeError(
-            result.stderr.strip()
-            or f"Failed to stop model: {model}"
+            result.stderr.strip() or f"Failed to stop model: {model}"
         )
 
     write_log(
         level="INFO",
-        component="ollama/model",
+        component=COMPONENT,
         action="stop",
         message="Model stopped successfully",
         details={
@@ -255,15 +277,22 @@ def stop_model(model: str):
 def load_model(
     model: str,
     keep_alive: str = "10m",
-):
-    """
-    Load a model into memory if it is not already loaded.
-    """
+) -> dict | None:
+    """Load a model into VRAM/system memory if not already active.
 
+    Args:
+        model: Model name to load.
+        keep_alive: Duration string to keep the model loaded (e.g., '10m', '1h'). Defaults to '10m'.
+
+    Returns:
+        dict | None: Generation API response dict if loaded, or None if already loaded.
+
+    Raises:
+        ValueError: If model name is empty.
+        RuntimeError: If checking status or loading the model fails.
+    """
     if not model.strip():
-        raise ValueError(
-            "Model name is required"
-        )
+        raise ValueError("Model name is required")
 
     # Check whether the model is already loaded.
     try:
@@ -271,10 +300,7 @@ def load_model(
             "http://127.0.0.1:11434/api/ps",
             timeout=5,
         ) as response:
-            data = json.loads(
-                response.read().decode("utf-8")
-            )
-
+            data = json.loads(response.read().decode("utf-8"))
     except (
         urllib.error.URLError,
         TimeoutError,
@@ -283,7 +309,7 @@ def load_model(
     ) as error:
         write_log(
             level="ERROR",
-            component="ollama/model",
+            component=COMPONENT,
             action="load",
             message="Failed to check loaded models",
             details={
@@ -291,7 +317,6 @@ def load_model(
                 "error": str(error),
             },
         )
-
         raise RuntimeError(
             "Failed to check loaded Ollama models"
         ) from error
@@ -301,24 +326,20 @@ def load_model(
     for item in data.get("models", []):
         loaded_model = item.get("name", "").strip()
 
-        if (
-            loaded_model == requested_model
-            or (
-                ":" not in requested_model
-                and loaded_model == f"{requested_model}:latest"
-            )
+        if loaded_model == requested_model or (
+            ":" not in requested_model
+            and loaded_model == f"{requested_model}:latest"
         ):
             write_log(
                 level="INFO",
-                component="ollama/model",
+                component=COMPONENT,
                 action="load",
                 message="Model is already loaded",
                 details={
                     "model": model,
                 },
             )
-
-            return
+            return None
 
     # Model is not loaded. Load it into memory.
     payload = {
@@ -330,9 +351,7 @@ def load_model(
 
     request = urllib.request.Request(
         "http://127.0.0.1:11434/api/generate",
-        data=json.dumps(
-            payload
-        ).encode("utf-8"),
+        data=json.dumps(payload).encode("utf-8"),
         headers={
             "Content-Type": "application/json",
         },
@@ -340,20 +359,12 @@ def load_model(
     )
 
     try:
-        with urllib.request.urlopen(
-            request,
-            timeout=300,
-        ) as response:
+        with urllib.request.urlopen(request, timeout=300) as response:
             raw = response.read()
-
-    except (
-        urllib.error.URLError,
-        TimeoutError,
-        OSError,
-    ) as error:
+    except (urllib.error.URLError, TimeoutError, OSError) as error:
         write_log(
             level="ERROR",
-            component="ollama/model",
+            component=COMPONENT,
             action="load",
             message="Failed to load model",
             details={
@@ -361,25 +372,17 @@ def load_model(
                 "error": str(error),
             },
         )
-
-        raise RuntimeError(
-            f"Failed to load model: {model}"
-        ) from error
+        raise RuntimeError(f"Failed to load model: {model}") from error
 
     try:
-        result = json.loads(
-            raw.decode("utf-8")
-        )
-
+        result = json.loads(raw.decode("utf-8"))
     except json.JSONDecodeError as error:
-        raise RuntimeError(
-            "Ollama returned invalid JSON"
-        ) from error
+        raise RuntimeError("Ollama returned invalid JSON") from error
 
     if "error" in result:
         write_log(
             level="ERROR",
-            component="ollama/model",
+            component=COMPONENT,
             action="load",
             message="Failed to load model",
             details={
@@ -387,14 +390,11 @@ def load_model(
                 "error": result["error"],
             },
         )
-
-        raise RuntimeError(
-            result["error"]
-        )
+        raise RuntimeError(result["error"])
 
     write_log(
         level="INFO",
-        component="ollama/model",
+        component=COMPONENT,
         action="load",
         message="Model loaded successfully",
         details={
@@ -406,15 +406,13 @@ def load_model(
     return result
 
 
-def list_running_models():
-    """
-    List currently running models.
-    """
+def list_running_models() -> str:
+    """List currently active running models via CLI.
 
-    result = _run_command(
-        ["ollama", "ps"]
-    )
-
+    Returns:
+        str: Output text from 'ollama ps'.
+    """
+    result = _run_command(["ollama", "ps"])
     return result.stdout.strip()
 
 
@@ -422,76 +420,70 @@ def configure_model(
     source_model: str,
     target_model: str,
     parameters: dict,
-):
-    """
-    Create a new configured model from an existing model.
+) -> str:
+    """Create a new configured model from an existing source model.
 
     The source model is not modified.
-    """
 
+    Args:
+        source_model: Existing model name to base configuration on.
+        target_model: New target model identifier name to create.
+        parameters: Dictionary of Ollama Modelfile PARAMETER key-values.
+
+    Returns:
+        str: Output text from 'ollama create'.
+
+    Raises:
+        ValueError: If model names or parameters are empty/missing.
+        TypeError: If parameters is not a dictionary.
+        RuntimeError: If Ollama fails to create the configured model.
+    """
     if not source_model.strip():
-        raise ValueError(
-            "Source model name is required"
-        )
+        raise ValueError("Source model name is required")
 
     if not target_model.strip():
-        raise ValueError(
-            "Target model name is required"
-        )
+        raise ValueError("Target model name is required")
 
     if not parameters:
-        raise ValueError(
-            "At least one configuration parameter is required"
-        )
+        raise ValueError("At least one configuration parameter is required")
 
     if not isinstance(parameters, dict):
-        raise TypeError(
-            "Parameters must be a dictionary"
-        )
+        raise TypeError("Parameters must be a dictionary")
 
     modelfile_parameters = []
 
     for key, value in parameters.items():
         if value is None:
             continue
-
-        modelfile_parameters.append(
-            f"PARAMETER {key} {value}"
-        )
+        modelfile_parameters.append(f"PARAMETER {key} {value}")
 
     if not modelfile_parameters:
-        raise ValueError(
-            "No valid configuration parameters found"
-        )
+        raise ValueError("No valid configuration parameters found")
 
     with tempfile.TemporaryDirectory() as temp_dir:
         modelfile = Path(temp_dir) / "Modelfile"
-
         content = (
             f"FROM {source_model}\n"
             + "\n".join(modelfile_parameters)
             + "\n"
         )
-
         modelfile.write_text(
             content,
             encoding="utf-8",
         )
 
-        result = _run_command(
-            [
-                "ollama",
-                "create",
-                target_model,
-                "-f",
-                str(modelfile),
-            ]
-        )
+        result = _run_command([
+            "ollama",
+            "create",
+            target_model,
+            "-f",
+            str(modelfile),
+        ])
 
     if result.returncode != 0:
         write_log(
             level="ERROR",
-            component="ollama/model",
+            component=COMPONENT,
             action="configure",
             message="Failed to create configured model",
             details={
@@ -500,7 +492,6 @@ def configure_model(
                 "error": result.stderr.strip(),
             },
         )
-
         raise RuntimeError(
             result.stderr.strip()
             or f"Failed to configure model: {target_model}"
@@ -508,7 +499,7 @@ def configure_model(
 
     write_log(
         level="INFO",
-        component="ollama/model",
+        component=COMPONENT,
         action="configure",
         message="Configured model created successfully",
         details={
