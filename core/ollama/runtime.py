@@ -1,6 +1,8 @@
 import os
 import shutil
 import subprocess
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -9,108 +11,126 @@ from core.logging import write_log
 
 COMPONENT = "ollama/runtime"
 
+OLLAMA_API_URL = "http://127.0.0.1:11434/api/tags"
 
-def get_status() -> dict:
-    """
-    Get the current Ollama runtime status.
+START_TIMEOUT = 15.0
+STOP_TIMEOUT = 10.0
+CHECK_INTERVAL = 0.25
 
-    Returns installation state, server state, health state,
-    and the installed client version.
-    """
 
-    installed = shutil.which("ollama") is not None
+def _is_installed() -> bool:
+    """Check whether Ollama is installed."""
+    return shutil.which("ollama") is not None
 
-    if not installed:
-        write_log(
-            level="WARNING",
-            component=COMPONENT,
-            action="status",
-            message="Ollama is not installed",
+
+def _is_running() -> bool:
+    """Check whether the Ollama API is running."""
+    try:
+        with urllib.request.urlopen(
+            OLLAMA_API_URL,
+            timeout=2,
+        ) as response:
+            return response.status == 200
+
+    except (
+        urllib.error.URLError,
+        TimeoutError,
+        OSError,
+    ):
+        return False
+
+
+def _wait_for_running(
+    expected: bool,
+    timeout: float,
+) -> bool:
+    """Wait until Ollama reaches the expected running state."""
+    deadline = time.monotonic() + timeout
+
+    while time.monotonic() < deadline:
+        if _is_running() == expected:
+            return True
+
+        time.sleep(CHECK_INTERVAL)
+
+    return _is_running() == expected
+
+
+def _get_version() -> str | None:
+    """Get the installed Ollama version."""
+    try:
+        result = subprocess.run(
+            ["ollama", "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
         )
 
-        return {
-            "installed": False,
-            "running": False,
-            "healthy": False,
-            "version": None,
-        }
+    except (
+        OSError,
+        subprocess.SubprocessError,
+    ):
+        return None
 
-    version_result = subprocess.run(
-        ["ollama", "--version"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    output = (
-        version_result.stdout
-        + version_result.stderr
-    )
-
-    version = None
+    output = result.stdout + result.stderr
 
     for line in output.splitlines():
         if "client version is" in line:
-            version = line.split(
+            return line.split(
                 "client version is",
-                1
+                1,
             )[1].strip()
-            break
 
         if line.startswith("ollama version is"):
-            version = line.split(
+            return line.split(
                 "ollama version is",
-                1
+                1,
             )[1].strip()
-            break
 
-    # Check the local Ollama API instead of relying on
-    # the CLI client to determine whether the server is running.
-    running = False
-    healthy = False
+    return None
 
-    try:
-        with urllib.request.urlopen(
-            "http://127.0.0.1:11434/api/tags",
-            timeout=2,
-        ) as response:
-            running = response.status == 200
-            healthy = running
 
-    except Exception:
-        pass
+def get_status() -> dict:
+    """Get the current Ollama status."""
+
+    installed = _is_installed()
+
+    if not installed:
+        return {
+            "installed": False,
+            "running": False,
+            "version": None,
+        }
+
+    running = _is_running()
+    version = _get_version()
+
+    status = {
+        "installed": True,
+        "running": running,
+        "version": version,
+    }
 
     write_log(
         level="INFO",
         component=COMPONENT,
         action="status",
         message="Ollama status checked",
-        details={
-            "installed": installed,
-            "running": running,
-            "healthy": healthy,
-            "version": version,
-        },
+        details=status,
     )
 
-    return {
-        "installed": True,
-        "running": running,
-        "healthy": healthy,
-        "version": version,
-    }
+    return status
 
 
 def install(installer_path: str) -> None:
-    """
-    Install Ollama from an existing local installer.
+    """Install Ollama from a local installer."""
 
-    The installer must already exist on the filesystem.
-    """
-
-    installer = Path(
-        installer_path
-    ).expanduser().resolve()
+    installer = (
+        Path(installer_path)
+        .expanduser()
+        .resolve()
+    )
 
     if not installer.is_file():
         write_log(
@@ -143,13 +163,6 @@ def install(installer_path: str) -> None:
             check=True,
         )
 
-        write_log(
-            level="INFO",
-            component=COMPONENT,
-            action="install",
-            message="Ollama installation completed",
-        )
-
     except Exception as error:
         write_log(
             level="ERROR",
@@ -163,15 +176,23 @@ def install(installer_path: str) -> None:
 
         raise
 
+    write_log(
+        level="INFO",
+        component=COMPONENT,
+        action="install",
+        message="Ollama installation completed",
+    )
 
-def start() -> None:
-    """
-    Start the Ollama server if it is not already running.
-    """
 
-    status = get_status()
+def start(
+    timeout: float = START_TIMEOUT,
+) -> None:
+    """Start Ollama and wait until the API is available."""
 
-    if status["running"]:
+    if not _is_installed():
+        raise RuntimeError("Ollama is not installed")
+
+    if _is_running():
         write_log(
             level="INFO",
             component=COMPONENT,
@@ -199,13 +220,6 @@ def start() -> None:
             ),
         )
 
-        write_log(
-            level="INFO",
-            component=COMPONENT,
-            action="start",
-            message="Ollama start command executed",
-        )
-
     except Exception as error:
         write_log(
             level="ERROR",
@@ -216,14 +230,53 @@ def start() -> None:
                 "error": str(error),
             },
         )
-
         raise
 
+    if not _wait_for_running(
+        expected=True,
+        timeout=timeout,
+    ):
+        write_log(
+            level="ERROR",
+            component=COMPONENT,
+            action="start",
+            message="Ollama failed to start",
+        )
 
-def stop() -> None:
-    """
-    Stop the Ollama server process.
-    """
+        raise RuntimeError(
+            f"Ollama did not start within {timeout} seconds"
+        )
+
+    write_log(
+        level="INFO",
+        component=COMPONENT,
+        action="start",
+        message="Ollama started successfully",
+    )
+
+
+def stop(
+    timeout: float = STOP_TIMEOUT,
+) -> None:
+    """Stop Ollama and wait until the API is unavailable."""
+
+    if not _is_installed():
+        write_log(
+            level="WARNING",
+            component=COMPONENT,
+            action="stop",
+            message="Ollama is not installed",
+        )
+        return
+
+    if not _is_running():
+        write_log(
+            level="INFO",
+            component=COMPONENT,
+            action="stop",
+            message="Ollama is already stopped",
+        )
+        return
 
     write_log(
         level="INFO",
@@ -233,9 +286,8 @@ def stop() -> None:
     )
 
     try:
-        # Use the native process command for each platform.
         if os.name == "nt":
-            subprocess.run(
+            result = subprocess.run(
                 [
                     "taskkill",
                     "/F",
@@ -246,19 +298,24 @@ def stop() -> None:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-
         else:
-            subprocess.run(
-                ["pkill", "ollama"],
+            result = subprocess.run(
+                [
+                    "pkill",
+                    "-TERM",
+                    "-x",
+                    "ollama",
+                ],
                 check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
 
-        write_log(
-            level="INFO",
-            component=COMPONENT,
-            action="stop",
-            message="Ollama stop command executed",
-        )
+        if result.returncode not in (0, 1):
+            raise RuntimeError(
+                f"Failed to stop Ollama "
+                f"(exit code: {result.returncode})"
+            )
 
     except Exception as error:
         write_log(
@@ -270,28 +327,26 @@ def stop() -> None:
                 "error": str(error),
             },
         )
-
         raise
 
+    if not _wait_for_running(
+        expected=False,
+        timeout=timeout,
+    ):
+        write_log(
+            level="ERROR",
+            component=COMPONENT,
+            action="stop",
+            message="Ollama failed to stop",
+        )
 
-def restart() -> None:
-    """
-    Restart the Ollama server.
-    """
+        raise RuntimeError(
+            f"Ollama did not stop within {timeout} seconds"
+        )
 
     write_log(
         level="INFO",
         component=COMPONENT,
-        action="restart",
-        message="Restarting Ollama",
-    )
-
-    stop()
-    start()
-
-    write_log(
-        level="INFO",
-        component=COMPONENT,
-        action="restart",
-        message="Ollama restart completed",
+        action="stop",
+        message="Ollama stopped successfully",
     )
