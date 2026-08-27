@@ -5,6 +5,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import urlparse
 
 from core.logging import write_log
 
@@ -17,6 +18,14 @@ from .downloader import (
 
 
 COMPONENT = "download_manager"
+ALLOWED_DOMAINS = {
+    "ollama.com",
+    "www.ollama.com",
+    "huggingface.co",
+    "www.huggingface.co",
+    "python.org",
+    "www.python.org",
+}
 
 
 class DownloadManager:
@@ -77,6 +86,20 @@ class DownloadManager:
 
         self._progress_lock = threading.Lock()
 
+    @staticmethod
+    def _verify_download_source(
+        self,
+        url: str,
+    ) -> None:
+
+        domain = urlparse(url).netloc.lower()
+
+        if domain not in ALLOWED_DOMAINS:
+
+            raise PermissionError(
+                f"Access denied: domain '{domain}' is not allowed."
+            )
+            
     # ========================================================
     # Queue
     # ========================================================
@@ -94,6 +117,7 @@ class DownloadManager:
             raise ValueError(
                 "URL cannot be empty."
             )
+        self._verify_download_source(url)
 
         if not filename:
 

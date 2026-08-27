@@ -5,7 +5,16 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlparse
 
+ALLOWED_DOMAINS = {
+    "ollama.com",
+    "www.ollama.com",
+    "huggingface.co",
+    "www.huggingface.co",
+    "python.org",
+    "www.python.org",
+}
 
 class DownloadError(Exception):
     """Raised when a download cannot be completed."""
@@ -34,6 +43,18 @@ class Downloader:
         - Support skipping
     """
 
+    def _verify_download_source(self) -> None:
+
+        domain = urlparse(
+            self.url
+        ).netloc.lower()
+
+        if domain not in ALLOWED_DOMAINS:
+
+            raise PermissionError(
+                f"Access denied: domain '{domain}' is not allowed."
+            )
+        
     def __init__(
         self,
         url: str,
@@ -124,6 +145,8 @@ class Downloader:
         Download the file with retry and resume support.
         """
 
+        self._verify_download_source()
+        
         self.destination.parent.mkdir(
             parents=True,
             exist_ok=True
