@@ -1,10 +1,16 @@
 """Ollama model benchmarking and multi-configuration experimental testing."""
 
 import json
+import threading
 import time
 import urllib.error
 import urllib.request
 
+from core.cancellation import (
+    CancellationToken,
+    OperationCancelled,
+    log_cancelled,
+)
 from core.logging import write_log
 from core.ollama import model as model_api
 
@@ -16,26 +22,39 @@ def _generate(
     model: str,
     prompt: str,
     options: dict | None = None,
+    cancellation: CancellationToken | None = None,
 ) -> dict:
     """Run one temporary model configuration against a single prompt.
 
     The configuration options are applied only to this specific request.
 
+    The request is streamed so a cancellation can take effect mid-generation:
+    with a single buffered response there is no point between sending the prompt
+    and receiving the whole answer at which the operation could stop. The final
+    streamed object carries the same timing and token fields a buffered response
+    would, so the returned dictionary is unchanged.
+
     Args:
         model: Ollama model identifier tag.
         prompt: Text prompt string to evaluate.
         options: Optional generation parameters (e.g., temperature, num_ctx).
+        cancellation: Optional token that stops the generation part-way.
 
     Returns:
-        dict: Raw JSON response parsed from Ollama generate API.
+        dict: Response fields parsed from the Ollama generate API, with the
+            generated text collected under 'response'.
 
     Raises:
         RuntimeError: If connection fails or Ollama returns an error payload.
+        OperationCancelled: If the token is cancelled during generation.
     """
+    if cancellation is not None:
+        cancellation.raise_if_cancelled()
+
     payload = {
         "model": model,
         "prompt": prompt,
-        "stream": False,
+        "stream": True,
     }
 
     if options:
@@ -53,20 +72,120 @@ def _generate(
     )
 
     try:
-        with urllib.request.urlopen(request, timeout=300) as response:
-            raw = response.read()
+        response = urllib.request.urlopen(request, timeout=300)
     except (urllib.error.URLError, TimeoutError, OSError) as error:
         raise RuntimeError(f"Failed to run model: {error}") from error
 
+    # Closing the response is what actually interrupts a generation in progress:
+    # the reader below is blocked in a socket read that no flag check can reach,
+    # so the close is done from a watcher thread and surfaces here as a read
+    # failure, which the cancellation check just after turns into a clean stop.
+    watcher = _CancelWatcher(response=response, cancellation=cancellation)
+    watcher.start()
+
+    chunks: list[str] = []
+    final: dict = {}
+
     try:
-        result = json.loads(raw.decode("utf-8"))
-    except json.JSONDecodeError as error:
-        raise RuntimeError("Ollama returned invalid JSON") from error
+        for line in response:
+            if cancellation is not None:
+                cancellation.raise_if_cancelled()
 
-    if "error" in result:
-        raise RuntimeError(result["error"])
+            line = line.strip()
+            if not line:
+                continue
 
-    return result
+            try:
+                event = json.loads(line.decode("utf-8"))
+            except json.JSONDecodeError as error:
+                raise RuntimeError("Ollama returned invalid JSON") from error
+
+            if "error" in event:
+                raise RuntimeError(event["error"])
+
+            text = event.get("response")
+            if text:
+                chunks.append(text)
+
+            if event.get("done"):
+                final = event
+    except OperationCancelled:
+        raise
+    except RuntimeError:
+        # Already a described failure — an error payload or malformed JSON.
+        raise
+    except Exception as error:
+        # Interrupting a generation means closing the socket out from under this
+        # reader, and what that surfaces as depends on how far the response had
+        # got: a URLError, an OSError, or an AttributeError from the emptied
+        # buffer. So the token is consulted before the error is believed —
+        # otherwise a cancellation would be recorded as a failed prompt.
+        if cancellation is not None:
+            cancellation.raise_if_cancelled()
+        raise RuntimeError(f"Failed to run model: {error}") from error
+    finally:
+        watcher.stop()
+        try:
+            response.close()
+        except Exception:
+            pass
+
+    if not final:
+        if cancellation is not None:
+            cancellation.raise_if_cancelled()
+        raise RuntimeError("Ollama closed the stream before finishing")
+
+    final["response"] = "".join(chunks)
+
+    return final
+
+
+class _CancelWatcher:
+    """Closes an open response as soon as a cancellation token is set."""
+
+    def __init__(
+        self,
+        response,
+        cancellation: CancellationToken | None,
+    ) -> None:
+        """Prepare a watcher for one response.
+
+        Args:
+            response: Open HTTP response to close on cancellation.
+            cancellation: Token to watch; None makes the watcher inert.
+        """
+        self._response = response
+        self._cancellation = cancellation
+        self._done = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        """Begin watching, unless there is no token to watch."""
+        if self._cancellation is None:
+            return
+
+        self._thread = threading.Thread(
+            target=self._watch,
+            name="ollama-generate-cancel",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Stop watching once the response has been consumed."""
+        self._done.set()
+
+    def _watch(self) -> None:
+        """Close the response when cancelled, or exit when it is consumed."""
+        while not self._done.is_set():
+            if self._cancellation is not None and self._cancellation.cancelled:
+                try:
+                    self._response.close()
+                except Exception:
+                    pass
+                return
+
+            self._done.wait(0.1)
 
 
 def run_test(
@@ -75,6 +194,7 @@ def run_test(
     config: dict | None = None,
     name: str = "test",
     include_output: bool = False,
+    cancellation: CancellationToken | None = None,
 ) -> dict:
     """Run one temporary model configuration against multiple prompts.
 
@@ -87,6 +207,7 @@ def run_test(
         config: Optional model parameter dictionary.
         name: Identifier name for the test run. Defaults to 'test'.
         include_output: Whether to include the generated text in results. Defaults to False.
+        cancellation: Optional token that stops the run between or during prompts.
 
     Returns:
         dict: Test execution results and summary statistics.
@@ -94,6 +215,9 @@ def run_test(
     Raises:
         ValueError: If model name is empty, prompts list is empty.
         TypeError: If include_output is not boolean or any prompt is not a string.
+        OperationCancelled: If the token is cancelled. Partial results are
+            discarded and the model this run loaded is unloaded first, so a
+            cancelled run leaves nothing behind but its log entry.
     """
     if not model.strip():
         raise ValueError("Model name is required")
@@ -118,106 +242,127 @@ def run_test(
 
     results = []
 
-    for index, prompt in enumerate(prompts, start=1):
-        if not isinstance(prompt, str):
-            raise TypeError(f"Prompt {index} must be a string")
+    try:
+        for index, prompt in enumerate(prompts, start=1):
+            if not isinstance(prompt, str):
+                raise TypeError(f"Prompt {index} must be a string")
 
-        try:
-            # Ensure the model is loaded before the test.
-            # This operation is intentionally outside the
-            # benchmark timer and is not included in results.
-            model_api.load_model(model)
+            if cancellation is not None:
+                cancellation.raise_if_cancelled()
 
-            started_at = time.perf_counter()
+            try:
+                # Ensure the model is loaded before the test.
+                # This operation is intentionally outside the
+                # benchmark timer and is not included in results.
+                model_api.load_model(model)
 
-            response = _generate(
-                model=model,
-                prompt=prompt,
-                options=configuration,
-            )
+                started_at = time.perf_counter()
 
-            duration = time.perf_counter() - started_at
+                response = _generate(
+                    model=model,
+                    prompt=prompt,
+                    options=configuration,
+                    cancellation=cancellation,
+                )
 
-            prompt_tokens = response.get("prompt_eval_count", 0)
-            output_tokens = response.get("eval_count", 0)
-            prompt_duration_ns = response.get("prompt_eval_duration", 0)
-            output_duration_ns = response.get("eval_duration", 0)
+                duration = time.perf_counter() - started_at
 
-            prompt_tokens_per_second = _tokens_per_second(
-                prompt_tokens,
-                prompt_duration_ns,
-            )
+                prompt_tokens = response.get("prompt_eval_count", 0)
+                output_tokens = response.get("eval_count", 0)
+                prompt_duration_ns = response.get("prompt_eval_duration", 0)
+                output_duration_ns = response.get("eval_duration", 0)
 
-            output_tokens_per_second = _tokens_per_second(
-                output_tokens,
-                output_duration_ns,
-            )
+                prompt_tokens_per_second = _tokens_per_second(
+                    prompt_tokens,
+                    prompt_duration_ns,
+                )
 
-            result = {
-                "index": index,
-                "success": True,
-                "prompt": prompt,
-                "duration_seconds": duration,
-                "prompt_tokens": prompt_tokens,
-                "output_tokens": output_tokens,
-                "prompt_tokens_per_second": prompt_tokens_per_second,
-                "output_tokens_per_second": output_tokens_per_second,
-                "done": response.get("done", True),
-            }
+                output_tokens_per_second = _tokens_per_second(
+                    output_tokens,
+                    output_duration_ns,
+                )
 
-            if include_output:
-                result["response"] = response.get("response", "")
+                result = {
+                    "index": index,
+                    "success": True,
+                    "prompt": prompt,
+                    "duration_seconds": duration,
+                    "prompt_tokens": prompt_tokens,
+                    "output_tokens": output_tokens,
+                    "prompt_tokens_per_second": prompt_tokens_per_second,
+                    "output_tokens_per_second": output_tokens_per_second,
+                    "done": response.get("done", True),
+                }
 
-            results.append(result)
+                if include_output:
+                    result["response"] = response.get("response", "")
 
-            write_log(
-                level="INFO",
-                component=COMPONENT,
-                action="test",
-                message="Prompt executed",
-                details={
-                    "name": name,
-                    "prompt_index": index,
-                    "success": result["success"],
-                    "duration_seconds": result["duration_seconds"],
-                    "prompt_tokens": result["prompt_tokens"],
-                    "output_tokens": result["output_tokens"],
-                    "prompt_tokens_per_second": result["prompt_tokens_per_second"],
-                    "output_tokens_per_second": result["output_tokens_per_second"],
-                    "done": result["done"],
-                },
-            )
+                results.append(result)
 
-        except Exception as error:
-            duration = (
-                time.perf_counter() - started_at
-                if "started_at" in locals()
-                else 0.0
-            )
+                write_log(
+                    level="INFO",
+                    component=COMPONENT,
+                    action="test",
+                    message="Prompt executed",
+                    details={
+                        "name": name,
+                        "prompt_index": index,
+                        "success": result["success"],
+                        "duration_seconds": result["duration_seconds"],
+                        "prompt_tokens": result["prompt_tokens"],
+                        "output_tokens": result["output_tokens"],
+                        "prompt_tokens_per_second": result["prompt_tokens_per_second"],
+                        "output_tokens_per_second": result["output_tokens_per_second"],
+                        "done": result["done"],
+                    },
+                )
 
-            result = {
-                "index": index,
-                "success": False,
-                "prompt": prompt,
-                "duration_seconds": duration,
-                "error": str(error),
-            }
+            except OperationCancelled:
+                # Cancellation is not a prompt failure: it must not be recorded
+                # as a result, and it stops the run rather than continuing.
+                raise
 
-            results.append(result)
+            except Exception as error:
+                duration = (
+                    time.perf_counter() - started_at
+                    if "started_at" in locals()
+                    else 0.0
+                )
 
-            write_log(
-                level="ERROR",
-                component=COMPONENT,
-                action="test",
-                message="Prompt execution failed",
-                details={
-                    "name": name,
-                    "prompt_index": index,
+                result = {
+                    "index": index,
                     "success": False,
+                    "prompt": prompt,
                     "duration_seconds": duration,
                     "error": str(error),
-                },
-            )
+                }
+
+                results.append(result)
+
+                write_log(
+                    level="ERROR",
+                    component=COMPONENT,
+                    action="test",
+                    message="Prompt execution failed",
+                    details={
+                        "name": name,
+                        "prompt_index": index,
+                        "success": False,
+                        "duration_seconds": duration,
+                        "error": str(error),
+                    },
+                )
+
+    except OperationCancelled as error:
+        _cleanup_cancelled_test(
+            model=model,
+            name=name,
+            completed=len(results),
+            total=len(prompts),
+            reason=str(error),
+        )
+        results.clear()
+        raise
 
     successful = [result for result in results if result["success"]]
     summary = _build_summary(results=successful)
@@ -243,11 +388,61 @@ def run_test(
     return result
 
 
+def _cleanup_cancelled_test(
+    model: str,
+    name: str,
+    completed: int,
+    total: int,
+    reason: str,
+) -> None:
+    """Undo a cancelled benchmark's side effects and record the cancellation.
+
+    A benchmark writes nothing to disk, so its only side effect is the model it
+    loaded into memory to run the prompts. Unloading it frees the VRAM the run
+    was holding, which leaves the machine as it was before the run started; the
+    log entry is the only thing that remains.
+
+    Args:
+        model: Model the run had loaded.
+        name: Test label.
+        completed: Prompts that had finished before the cancellation.
+        total: Prompts the run was going to execute.
+        reason: Why the run was cancelled.
+    """
+    unloaded = False
+    unload_error: str | None = None
+
+    try:
+        model_api.stop_model(model)
+        unloaded = True
+    except Exception as error:
+        # The model may not have loaded yet, or Ollama may already be gone;
+        # neither is a reason to fail the cancellation.
+        unload_error = str(error)
+
+    log_cancelled(
+        component=COMPONENT,
+        action="test",
+        message="Test cancelled",
+        details={
+            "name": name,
+            "model": model,
+            "prompts_completed": completed,
+            "prompts_total": total,
+            "partial_results_discarded": completed,
+            "model_unloaded": unloaded,
+            "unload_error": unload_error,
+            "reason": reason,
+        },
+    )
+
+
 def compare_tests(
     model: str,
     prompts: list[str],
     configurations: list[dict],
     include_output: bool = False,
+    cancellation: CancellationToken | None = None,
 ) -> dict:
     """Run the same prompts against multiple temporary model configurations.
 
@@ -256,6 +451,7 @@ def compare_tests(
         prompts: List of evaluation prompt strings.
         configurations: List of configuration dictionaries with 'name' and 'options'.
         include_output: Whether to include generated output in test results. Defaults to False.
+        cancellation: Optional token that stops the comparison part-way.
 
     Returns:
         dict: Aggregated comparison results across all configurations.
@@ -263,6 +459,9 @@ def compare_tests(
     Raises:
         ValueError: If model, prompts, or configurations are empty.
         TypeError: If configurations or prompt items are invalid types.
+        OperationCancelled: If the token is cancelled. Results collected so far
+            are discarded, so a cancelled comparison leaves nothing behind but
+            its log entry.
     """
     if not model.strip():
         raise ValueError("Model name is required")
@@ -310,13 +509,37 @@ def compare_tests(
     tests = []
 
     for configuration in normalized_configurations:
-        result = run_test(
-            model=model,
-            prompts=prompts,
-            config=configuration["options"],
-            name=configuration["name"],
-            include_output=include_output,
-        )
+        if cancellation is not None:
+            cancellation.raise_if_cancelled()
+
+        try:
+            result = run_test(
+                model=model,
+                prompts=prompts,
+                config=configuration["options"],
+                name=configuration["name"],
+                include_output=include_output,
+                cancellation=cancellation,
+            )
+        except OperationCancelled as error:
+            # run_test has already unloaded the model and logged its own
+            # cancellation; discard the finished configurations so no partial
+            # comparison survives, and record what the comparison as a whole lost.
+            log_cancelled(
+                component=COMPONENT,
+                action="compare",
+                message="Tests cancelled",
+                details={
+                    "model": model,
+                    "configurations_completed": len(tests),
+                    "configurations_total": len(normalized_configurations),
+                    "partial_results_discarded": len(tests),
+                    "reason": str(error),
+                },
+            )
+            tests.clear()
+            raise
+
         tests.append(result)
 
     result = {

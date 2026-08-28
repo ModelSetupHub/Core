@@ -3,6 +3,12 @@
 from pathlib import Path
 import subprocess
 
+from core.cancellation import (
+    CancellationToken,
+    OperationCancelled,
+    log_cancelled,
+    run_cancellable,
+)
 from core.logging import write_log
 from core.python.environment import get_python_path
 
@@ -12,12 +18,14 @@ COMPONENT = "python"
 def install_packages(
     packages: list[str],
     environment: str | None = None,
+    cancellation: CancellationToken | None = None,
 ) -> str:
     """Install one or more Python packages via pip.
 
     Args:
         packages: List of package names or version specifiers.
         environment: Optional path to the virtual environment.
+        cancellation: Optional token that stops the installation part-way.
 
     Returns:
         str: Output text from pip install.
@@ -25,26 +33,40 @@ def install_packages(
     Raises:
         ValueError: If packages list is empty.
         RuntimeError: If pip install returns a non-zero exit code.
+        OperationCancelled: If the token is cancelled. Pip is terminated and
+            anything it had already installed is uninstalled, so a cancelled
+            installation leaves nothing behind but its log entry.
     """
     if not packages:
         raise ValueError("At least one package is required")
 
     python_path = get_python_path(environment)
 
-    result = subprocess.run(
-        [
-            python_path,
-            "-m",
-            "pip",
-            "install",
-            *packages,
-        ],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
+    # Recorded before pip runs, so a cancellation can tell what it added.
+    installed_before = _installed_distributions(python_path)
+
+    try:
+        result = run_cancellable(
+            [
+                python_path,
+                "-m",
+                "pip",
+                "install",
+                *packages,
+            ],
+            cancellation=cancellation,
+            component=COMPONENT,
+            action="install_packages",
+        )
+    except OperationCancelled as error:
+        _cleanup_cancelled_packages(
+            python_path=python_path,
+            packages=packages,
+            environment=environment,
+            installed_before=installed_before,
+            reason=str(error),
+        )
+        raise
 
     if result.returncode != 0:
         raise RuntimeError(
@@ -63,6 +85,102 @@ def install_packages(
     )
 
     return result.stdout.strip()
+
+
+def _installed_distributions(python_path: str) -> set[str]:
+    """List the distributions currently installed for an interpreter.
+
+    Args:
+        python_path: Interpreter to inspect.
+
+    Returns:
+        set[str]: Lower-cased distribution names, empty when pip cannot be
+        queried — in which case a cancellation simply has nothing to compare
+        against and removes nothing.
+    """
+    try:
+        result = subprocess.run(
+            [python_path, "-m", "pip", "list", "--format=freeze"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set()
+
+    if result.returncode != 0:
+        return set()
+
+    names = set()
+
+    for line in result.stdout.splitlines():
+        name = line.split("==")[0].strip()
+        if name:
+            names.add(name.lower())
+
+    return names
+
+
+def _cleanup_cancelled_packages(
+    python_path: str,
+    packages: list[str],
+    environment: str | None,
+    installed_before: set[str],
+    reason: str,
+) -> None:
+    """Uninstall whatever a cancelled pip run had already installed.
+
+    Pip installs one distribution at a time, so an interrupted run can leave some
+    of the requested packages — and their dependencies — behind. Comparing the
+    installed set against the one taken before the run identifies exactly what
+    this call added, including dependencies, and those are removed. Packages that
+    were already installed are left alone.
+
+    Args:
+        python_path: Interpreter pip was running against.
+        packages: Packages the run was asked to install.
+        environment: Environment that was targeted, for the log entry.
+        installed_before: Distributions present before the run.
+        reason: Why the installation was cancelled.
+    """
+    added = sorted(_installed_distributions(python_path) - installed_before)
+
+    removed = False
+    cleanup_error: str | None = None
+
+    if added:
+        try:
+            result = subprocess.run(
+                [python_path, "-m", "pip", "uninstall", "-y", *added],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                timeout=300,
+            )
+            removed = result.returncode == 0
+            if not removed:
+                cleanup_error = result.stderr.strip()
+        except (OSError, subprocess.SubprocessError) as error:
+            cleanup_error = str(error)
+
+    log_cancelled(
+        component=COMPONENT,
+        action="install_packages",
+        message="Package installation cancelled",
+        details={
+            "packages": packages,
+            "environment": environment,
+            "distributions_added": added,
+            "distributions_removed": removed,
+            "cleanup_error": cleanup_error,
+            "reason": reason,
+        },
+    )
 
 
 def uninstall_packages(

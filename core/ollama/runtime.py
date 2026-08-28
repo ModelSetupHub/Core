@@ -8,6 +8,17 @@ import time
 import urllib.error
 import urllib.request
 
+try:
+    import winreg
+except ImportError:
+    winreg = None
+
+from core.cancellation import (
+    CancellationToken,
+    OperationCancelled,
+    log_cancelled,
+    run_cancellable,
+)
 from core.logging import write_log
 
 COMPONENT = "ollama/runtime"
@@ -16,6 +27,11 @@ OLLAMA_API_URL = "http://127.0.0.1:11434/api/tags"
 START_TIMEOUT = 15.0
 STOP_TIMEOUT = 10.0
 CHECK_INTERVAL = 0.25
+
+# Where a completed Ollama installation registers itself, read only to find the
+# uninstaller when a cancelled installation has to be rolled back.
+UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Ollama"
+UNINSTALL_TIMEOUT = 120.0
 
 
 def _is_installed() -> bool:
@@ -137,14 +153,23 @@ def get_status() -> dict:
     return status
 
 
-def install(installer_path: str) -> None:
+def install(
+    installer_path: str,
+    cancellation: CancellationToken | None = None,
+) -> None:
     """Execute an Ollama standalone installer executable.
 
     Args:
         installer_path: Path to the installer file on disk.
+        cancellation: Optional token that stops the installer part-way.
 
     Raises:
         FileNotFoundError: If the installer binary is not found.
+        OperationCancelled: If the token is cancelled. The installer's process
+            tree is terminated and, when it had already registered Ollama, that
+            partial installation is removed, so a cancelled install leaves
+            nothing behind but its log entry.
+        RuntimeError: If the installer exits with a non-zero status.
         Exception: If running the installer fails.
     """
     installer = Path(installer_path).expanduser().resolve()
@@ -161,6 +186,10 @@ def install(installer_path: str) -> None:
         )
         raise FileNotFoundError(f"Installer not found: {installer}")
 
+    # Recorded before the installer runs, so a cancellation can tell whether this
+    # call is what put Ollama on the machine and therefore what to roll back.
+    was_installed = _is_installed()
+
     write_log(
         level="INFO",
         component=COMPONENT,
@@ -172,10 +201,20 @@ def install(installer_path: str) -> None:
     )
 
     try:
-        subprocess.run(
+        result = run_cancellable(
             [str(installer)],
-            check=True,
+            cancellation=cancellation,
+            component=COMPONENT,
+            action="install",
+            **_process_group_kwargs(),
         )
+    except OperationCancelled as error:
+        _cleanup_cancelled_install(
+            installer=installer,
+            was_installed=was_installed,
+            reason=str(error),
+        )
+        raise
     except Exception as error:
         write_log(
             level="ERROR",
@@ -188,12 +227,133 @@ def install(installer_path: str) -> None:
         )
         raise
 
+    if result.returncode != 0:
+        write_log(
+            level="ERROR",
+            component=COMPONENT,
+            action="install",
+            message="Ollama installation failed",
+            details={
+                "returncode": result.returncode,
+                "error": result.stderr.strip(),
+            },
+        )
+        raise RuntimeError(
+            result.stderr.strip()
+            or f"Installer exited with code {result.returncode}"
+        )
+
     write_log(
         level="INFO",
         component=COMPONENT,
         action="install",
         message="Ollama installation completed",
     )
+
+
+def _process_group_kwargs() -> dict:
+    """Build the Popen arguments needed to terminate an installer's whole tree.
+
+    An installer normally launches the real installation as a child process, so
+    it has to be started in a way that lets the entire tree be signalled at once.
+
+    Returns:
+        dict: Platform-specific keyword arguments for ``subprocess.Popen``.
+    """
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+
+    return {"start_new_session": True}
+
+
+def _cleanup_cancelled_install(
+    installer: Path,
+    was_installed: bool,
+    reason: str,
+) -> None:
+    """Remove what a cancelled Ollama installation left behind.
+
+    The installer's process tree is already terminated by the time this runs. If
+    Ollama was absent beforehand and the interrupted installer got far enough to
+    register it, that half-finished installation is the leftover: the service is
+    stopped and the registered uninstaller is run so the machine ends up as it
+    was. An installation that was already there is left alone — it is not this
+    operation's to remove.
+
+    Args:
+        installer: Installer that was interrupted.
+        was_installed: Whether Ollama was present before this attempt.
+        reason: Why the installation was cancelled.
+    """
+    partial_install = not was_installed and _is_installed()
+    service_stopped = False
+    removed = False
+    cleanup_error: str | None = None
+
+    if partial_install:
+        try:
+            if _is_running():
+                stop()
+                service_stopped = True
+        except Exception as error:
+            cleanup_error = str(error)
+
+        uninstaller = _find_uninstaller()
+
+        if uninstaller is not None:
+            try:
+                subprocess.run(
+                    [str(uninstaller), "/S"],
+                    capture_output=True,
+                    check=False,
+                    timeout=UNINSTALL_TIMEOUT,
+                )
+                removed = not _is_installed()
+            except (OSError, subprocess.SubprocessError) as error:
+                cleanup_error = str(error)
+
+    log_cancelled(
+        component=COMPONENT,
+        action="install",
+        message="Ollama installation cancelled",
+        details={
+            "installer": str(installer),
+            "was_installed_before": was_installed,
+            "partial_install_detected": partial_install,
+            "service_stopped": service_stopped,
+            "partial_install_removed": removed,
+            "cleanup_error": cleanup_error,
+            "reason": reason,
+        },
+    )
+
+
+def _find_uninstaller() -> Path | None:
+    """Locate the uninstaller a partial Ollama installation registered.
+
+    Returns:
+        Path | None: Uninstaller executable, or None when none is registered, in
+        which case there is nothing that can be removed safely.
+    """
+    if winreg is None:
+        return None
+
+    for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        try:
+            with winreg.OpenKey(root, UNINSTALL_KEY) as key:
+                value, _ = winreg.QueryValueEx(key, "UninstallString")
+        except OSError:
+            continue
+
+        if not value:
+            continue
+
+        candidate = Path(str(value).strip().strip('"'))
+
+        if candidate.is_file():
+            return candidate
+
+    return None
 
 
 def start(

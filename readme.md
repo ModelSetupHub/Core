@@ -9,6 +9,7 @@ Core backend toolkit for managing local AI environments, hardware discovery, Oll
 - **Ollama Runtime & Models (`core.ollama`)**: Controls the Ollama background daemon, manages local model lifecycles (create, run, stop, remove), and runs parameter benchmarks with token-speed metrics.
 - **Python Environment (`core.python`)**: Automates virtual environment (`venv`) lifecycle, package management via `pip`, script execution, and Windows Python installation discovery.
 - **Download Manager (`core.download_manager`)**: Multi-file sequential downloader featuring pause/resume, retries, speed and ETA calculation, and cancellation support.
+- **Cancellation (`core.cancellation`)**: Cooperative cancellation for the long-running operations — downloads, benchmarks and installations — with process-tree termination for subprocesses.
 - **Logging (`core.logging`)**: Structured JSON logging system with component-level tagging and action tracking.
 
 
@@ -30,6 +31,7 @@ core/
 ├── download_manager/
 │   ├── downloader.py        # Streamed HTTP/HTTPS downloader
 │   └── manager.py           # Queue and progress manager
+├── cancellation.py          # Cancellation tokens and cancellable subprocesses
 └── logging.py               # Structured event logging
 ```
 
@@ -96,4 +98,48 @@ from core.python import environment, tools
 # Create virtual environment and install packages
 env_path = environment.create_environment("envs/ai_env")
 tools.install_packages(["torch", "numpy"], environment=env_path)
+```
+
+### Cancelling a Long-Running Operation
+
+Downloads, benchmarks and installations accept a `CancellationToken`. Cancelling
+is cooperative: the operation stops at its next safe point, undoes what it had
+done, and records a `WARNING` entry describing the cleanup — that log entry is the
+only thing a cancelled operation leaves behind.
+
+```python
+import threading
+
+from core.cancellation import CancellationToken, OperationCancelled
+from core.ollama import experiment
+
+token = CancellationToken()
+
+# Cancel the benchmark from another thread — a UI button, a timer, a signal handler.
+threading.Timer(30, lambda: token.cancel("Taking too long")).start()
+
+try:
+    experiment.run_test(
+        model="llama3",
+        prompts=["Summarize the solar system."] * 10,
+        cancellation=token,
+    )
+except OperationCancelled as error:
+    # Partial results are already discarded and the model has been unloaded.
+    print("Cancelled:", error)
+```
+
+`DownloadManager` has its own controls, since it already owns a background
+worker. Cancelling deletes the files the session produced — partial *and*
+completed, as the queue is one unit of work that did not finish — while leaving
+files that existed beforehand untouched. Pausing is the softer option: it
+suspends the transfer and keeps everything, and resuming continues the active
+file from its partial data via an HTTP range request.
+
+```python
+dm.pause()                                 # suspend; queue and partial data kept
+dm.resume()                                # continue where it left off
+
+dm.cancel(reason="Not needed after all")   # removes what the session downloaded
+dm.cancel(cleanup=False)                   # abandons the queue, keeps the files
 ```

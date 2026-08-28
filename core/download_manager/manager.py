@@ -9,6 +9,7 @@ import time
 from typing import Iterable
 from urllib.parse import urlparse
 
+from core.cancellation import log_cancelled
 from core.logging import write_log
 from .downloader import (
     DownloadCancelled,
@@ -54,6 +55,9 @@ class DownloadManager:
             max_retries: Maximum download retry attempts per file. Defaults to 3.
         """
         self.download_directory = Path(download_directory)
+        # Whether this manager created the directory, so a cancellation knows if
+        # removing it again is its business.
+        self._created_directory = not self.download_directory.exists()
         self.download_directory.mkdir(
             parents=True,
             exist_ok=True,
@@ -68,6 +72,10 @@ class DownloadManager:
         self._paused = False
         self._cancelled = False
         self._skip_requested = False
+
+        self._cancel_reason: str | None = None
+        self._cleanup_on_cancel = True
+        self._cleanup_done = False
 
         self._worker_thread: threading.Thread | None = None
         self._keyboard_thread: threading.Thread | None = None
@@ -343,6 +351,8 @@ class DownloadManager:
                     action="manager_cancel",
                     message="Download manager cancelled",
                 )
+                if self._cleanup_on_cancel:
+                    self._cleanup_cancelled()
             else:
                 write_log(
                     level="INFO",
@@ -551,7 +561,12 @@ class DownloadManager:
     # ========================================================
 
     def pause(self) -> None:
-        """Pause the current download and active manager loop."""
+        """Pause the current download and active manager loop.
+
+        Suspends the transfer without ending the task: the queue and the partial
+        data are kept, and :meth:`resume` continues the active file from where it
+        stopped. To end the task and remove what it produced, use :meth:`cancel`.
+        """
         if not self._running or self._paused:
             return
 
@@ -619,12 +634,46 @@ class DownloadManager:
     # Cancel
     # ========================================================
 
-    def cancel(self) -> None:
-        """Cancel all pending downloads in the queue."""
+    def cancel(
+        self,
+        reason: str | None = None,
+        cleanup: bool = True,
+    ) -> None:
+        """Cancel all pending downloads in the queue.
+
+        The active download stops at its next chunk boundary and the rest of the
+        queue is abandoned. With ``cleanup`` left on, everything the session
+        produced is then removed — partial files, and completed files too — so a
+        cancelled download leaves nothing behind but its log entry. Pass
+        ``cleanup=False`` to keep what had already finished, which is what the
+        older behaviour did.
+
+        To suspend a download and keep the task, use :meth:`pause` instead; this
+        ends it.
+
+        Args:
+            reason: Optional explanation recorded with the cancellation.
+            cleanup: Whether to delete the files this session produced.
+        """
         if not self._running:
+            # Nothing is downloading. A queue that was started and abandoned
+            # still has files to clean up, but one that already finished has
+            # nothing to cancel — doing so must not delete what it delivered.
+            if self._is_finished():
+                return
+
+            self._cancelled = True
+            self._cancel_reason = reason or "Cancelled by request"
+
+            if cleanup:
+                self._cleanup_cancelled()
+
             return
 
         self._cancelled = True
+        self._cancel_reason = reason or "Cancelled by request"
+        self._cleanup_on_cancel = cleanup
+
         if self._current_downloader:
             self._current_downloader.cancel()
 
@@ -635,6 +684,103 @@ class DownloadManager:
             message="Download manager cancellation requested",
             details={
                 "file_index": self._current_index + 1,
+                "reason": self._cancel_reason,
+                "cleanup": cleanup,
+            },
+        )
+
+    def _is_finished(self) -> bool:
+        """Report whether the queue ran to completion.
+
+        Distinguishes a queue that finished from one that was never started or was
+        abandoned part-way: cancelling the first has nothing to undo, while the
+        others may have partial files to remove.
+
+        Returns:
+            bool: True when every queued item reached a final state and none is
+            still waiting.
+        """
+        if not self._queue:
+            return False
+
+        return all(
+            item["status"] in ("completed", "skipped", "failed")
+            for item in self._queue
+        )
+
+    # ========================================================
+    # Cancellation cleanup
+    # ========================================================
+
+    def _cleanup_cancelled(self) -> None:
+        """Delete everything the cancelled session produced.
+
+        A cancelled download is meant to leave no trace, so both the ``.part``
+        files of interrupted transfers and the files that had finished are
+        removed: the queue was a single unit of work that did not complete, and
+        half a set of model files is not a useful thing to leave on disk. A file
+        that was already there before the session started is never touched —
+        ``Downloader`` reports those as completed without downloading them, so
+        they are identified by having no partial file and no bytes recorded.
+
+        The download directory itself is removed only when this manager created
+        it and it is left empty.
+        """
+        if self._cleanup_done:
+            return
+
+        self._cleanup_done = True
+
+        removed: list[str] = []
+        kept: list[str] = []
+        errors: list[str] = []
+
+        for item in self._queue:
+            filename = item["filename"]
+            destination = self.download_directory / filename
+            partial = Path(str(destination) + ".part")
+
+            # Pre-existing file this session did not fetch: not ours to delete.
+            preexisting = (
+                item["status"] == "completed"
+                and not item.get("downloaded")
+                and not partial.exists()
+            )
+
+            if preexisting:
+                kept.append(filename)
+                continue
+
+            for path in (partial, destination):
+                try:
+                    if path.is_file():
+                        path.unlink()
+                        removed.append(path.name)
+                except OSError as error:
+                    errors.append(f"{path.name}: {error}")
+
+        directory_removed = False
+
+        if self._created_directory:
+            try:
+                self.download_directory.rmdir()
+                directory_removed = True
+            except OSError:
+                # Not empty, or in use: the files this session added are gone,
+                # which is what cleanup promised.
+                pass
+
+        log_cancelled(
+            component=COMPONENT,
+            action="manager_cancel",
+            message="Download cancelled",
+            details={
+                "download_directory": str(self.download_directory),
+                "files_removed": removed,
+                "preexisting_files_kept": kept,
+                "directory_removed": directory_removed,
+                "cleanup_errors": errors,
+                "reason": self._cancel_reason or "Cancelled by request",
             },
         )
 
@@ -662,6 +808,7 @@ class DownloadManager:
             "running": self._running,
             "paused": self._paused,
             "cancelled": self._cancelled,
+            "cancel_reason": self._cancel_reason,
             "current_index": self._current_index,
             "total_files": len(self._queue),
             "downloads": downloads,
