@@ -160,18 +160,10 @@ def create_script(
     path: str,
     content: str,
 ) -> str:
-    """Create a new Python script file on disk.
+    """Create a new Python script file on disk."""
+    if Path(path).suffix.lower() != ".py":
+        raise ValueError("Script path must have a .py extension")
 
-    Args:
-        path: Target file path to write script to.
-        content: Text content of the Python script.
-
-    Returns:
-        str: Absolute path to the created script.
-
-    Raises:
-        FileExistsError: If the script file already exists.
-    """
     script = Path(path).expanduser().resolve()
 
     if script.exists():
@@ -204,18 +196,10 @@ def edit_script(
     path: str,
     content: str,
 ) -> str:
-    """Overwrite the contents of an existing Python script file.
+    """Overwrite the contents of an existing Python script file."""
+    if Path(path).suffix.lower() != ".py":
+        raise ValueError("Script path must have a .py extension")
 
-    Args:
-        path: Target script file path to edit.
-        content: New text content to write.
-
-    Returns:
-        str: Absolute path to the updated script.
-
-    Raises:
-        FileNotFoundError: If the script file does not exist.
-    """
     script = Path(path).expanduser().resolve()
 
     if not script.is_file():
@@ -240,17 +224,10 @@ def edit_script(
 
 
 def delete_script(path: str) -> str:
-    """Delete a Python script file from disk.
+    """Delete a Python script file from disk."""
+    if Path(path).suffix.lower() != ".py":
+        raise ValueError("Script path must have a .py extension")
 
-    Args:
-        path: Path to the script file to remove.
-
-    Returns:
-        str: Absolute path of the deleted script.
-
-    Raises:
-        FileNotFoundError: If the script file does not exist.
-    """
     script = Path(path).expanduser().resolve()
 
     if not script.is_file():
@@ -275,19 +252,10 @@ def run_script(
     path: str,
     environment: str | None = None,
 ) -> str:
-    """Execute a Python script using the specified environment.
+    """Execute a Python script using the specified environment."""
+    if Path(path).suffix.lower() != ".py":
+        raise ValueError("Script path must have a .py extension")
 
-    Args:
-        path: Path to the Python script to execute.
-        environment: Optional path to the virtual environment.
-
-    Returns:
-        str: Standard output from the script execution.
-
-    Raises:
-        FileNotFoundError: If the script file does not exist.
-        RuntimeError: If script execution fails with non-zero exit code.
-    """
     script = Path(path).expanduser().resolve()
 
     if not script.is_file():
