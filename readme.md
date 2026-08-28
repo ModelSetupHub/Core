@@ -21,7 +21,7 @@ core/
 │   ├── hardware.py          # CPU, GPU, RAM detection
 │   └── scanner.py           # System compatibility and capability scanner
 ├── ollama/
-│   ├── runtime.py           # Service lifecycle (start/stop/status)
+│   ├── runtime.py           # Service lifecycle (start/stop/status) and log reading
 │   ├── model.py             # Model creation, loading, and execution
 │   └── experiment.py        # Benchmarking and token throughput tests
 ├── python/

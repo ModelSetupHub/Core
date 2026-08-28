@@ -28,6 +28,9 @@ START_TIMEOUT = 15.0
 STOP_TIMEOUT = 10.0
 CHECK_INTERVAL = 0.25
 
+# Every file Ollama writes in its log directory, current and rotated alike.
+LOG_FILE_GLOB = "*.log"
+
 # Where a completed Ollama installation registers itself, read only to find the
 # uninstaller when a cancelled installation has to be rolled back.
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Ollama"
@@ -151,6 +154,251 @@ def get_status() -> dict:
     )
 
     return status
+
+
+def _get_log_directories() -> list[Path]:
+    """Build the list of directories Ollama may keep its log files in.
+
+    Ollama does not expose its log location, so the documented per-platform
+    directories are probed instead: ``%LOCALAPPDATA%\\Ollama`` on Windows and
+    ``~/.ollama/logs`` elsewhere. Both are listed on every platform because a
+    manually placed installation can use either, and only directories that
+    exist are returned.
+
+    Returns:
+        list[Path]: Existing log directories, most likely first.
+    """
+    candidates: list[Path] = []
+
+    local_appdata = os.environ.get("LOCALAPPDATA")
+
+    if local_appdata:
+        candidates.append(Path(local_appdata) / "Ollama")
+
+    home = Path.home()
+    candidates.append(home / ".ollama" / "logs")
+
+    if os.name != "nt":
+        candidates.append(Path("/var/log/ollama"))
+
+    directories: list[Path] = []
+    seen: set[Path] = set()
+
+    for candidate in candidates:
+        try:
+            resolved = candidate.expanduser().resolve()
+        except OSError:
+            continue
+
+        if resolved in seen or not resolved.is_dir():
+            continue
+
+        seen.add(resolved)
+        directories.append(resolved)
+
+    return directories
+
+
+def _require_log_directories() -> list[Path]:
+    """Return Ollama's log directories, failing when none exists.
+
+    Returns:
+        list[Path]: Existing log directories.
+
+    Raises:
+        RuntimeError: If no Ollama log directory exists on this machine.
+    """
+    directories = _get_log_directories()
+
+    if directories:
+        return directories
+
+    write_log(
+        level="ERROR",
+        component=COMPONENT,
+        action="logs",
+        message="No Ollama log directory found",
+    )
+    raise RuntimeError(
+        "No Ollama log directory was found. Ollama logs to "
+        "%LOCALAPPDATA%\\Ollama on Windows and ~/.ollama/logs elsewhere; "
+        "neither exists, so Ollama has most likely never run on this machine."
+    )
+
+
+def _collect_log_files() -> dict[str, Path]:
+    """Index Ollama's log files by their file name.
+
+    Names are unique within the result: when the same name appears in more than
+    one log directory, the first directory to provide it wins, matching the
+    search order of ``_get_log_directories``.
+
+    Returns:
+        dict[str, Path]: File name mapped to its full path, most recently
+        modified first.
+
+    Raises:
+        RuntimeError: If no Ollama log directory exists on this machine.
+    """
+    found: dict[str, Path] = {}
+
+    for directory in _require_log_directories():
+        for log_file in directory.glob(LOG_FILE_GLOB):
+            if log_file.is_file() and log_file.name not in found:
+                found[log_file.name] = log_file
+
+    # Newest first, so the live app.log and server.log lead and the rotated
+    # copies follow in the order they were retired.
+    ordered = sorted(
+        found.items(),
+        key=lambda item: item[1].stat().st_mtime,
+        reverse=True,
+    )
+
+    return dict(ordered)
+
+
+def list_ollama_logs() -> dict:
+    """List the Ollama log files available on this machine.
+
+    Names the ``*.log`` files Ollama keeps — the live ``app.log`` and
+    ``server.log`` plus the rotated ``app-N.log`` and ``server-N.log`` copies —
+    with the size of each, without reading any of them. The sizes are what make
+    the choice informed: ``read_ollama_logs`` returns a whole file, and
+    ``server.log`` alone routinely runs past a megabyte. These are Ollama's own
+    logs, unrelated to this project's execution log that
+    ``core.logging.read_logs`` serves.
+
+    Returns:
+        dict: Mapping with 'directories' searched, 'sizes' as a
+        ``{file name: size in bytes}`` dict, 'files' as a list of dicts
+        ('name', 'path', 'size_bytes', 'modified'), 'names' holding just the
+        file names, and 'total_bytes' summing them all. Every listing is
+        ordered most recently modified first.
+
+    Raises:
+        RuntimeError: If no Ollama log directory exists on this machine.
+    """
+    directories = _require_log_directories()
+    log_files = _collect_log_files()
+
+    files = []
+    sizes: dict[str, int] = {}
+
+    for name, path in log_files.items():
+        stats = path.stat()
+        sizes[name] = stats.st_size
+        files.append(
+            {
+                "name": name,
+                "path": str(path),
+                "size_bytes": stats.st_size,
+                "modified": time.strftime(
+                    "%Y-%m-%d %H:%M:%S",
+                    time.localtime(stats.st_mtime),
+                ),
+            }
+        )
+
+    write_log(
+        level="INFO",
+        component=COMPONENT,
+        action="list_logs",
+        message="Ollama log files listed",
+        details={
+            "directories": [str(directory) for directory in directories],
+            "file_count": len(files),
+            "sizes": sizes,
+        },
+    )
+
+    return {
+        "directories": [str(directory) for directory in directories],
+        "sizes": sizes,
+        "files": files,
+        "names": list(log_files),
+        "total_bytes": sum(sizes.values()),
+    }
+
+
+def read_ollama_logs(file_name: str) -> dict:
+    """Read one Ollama log file in full.
+
+    The file is chosen by name from those ``list_ollama_logs`` reports; call that
+    first. Only a bare file name is accepted, so a path cannot be used to reach
+    outside Ollama's own log directories, and the file's entire contents are
+    returned with nothing truncated.
+
+    Args:
+        file_name: Log file name, for example 'server.log' or 'app-2.log'.
+
+    Returns:
+        dict: Mapping with 'name', 'path', 'size_bytes', 'modified', and
+        'content' holding the whole file.
+
+    Raises:
+        ValueError: If the name is empty or contains a path separator.
+        FileNotFoundError: If no log file of that name exists.
+        RuntimeError: If no Ollama log directory exists on this machine.
+        OSError: If the file exists but cannot be read.
+    """
+    requested = file_name.strip()
+
+    if not requested:
+        raise ValueError("A log file name is required")
+
+    # A name is all that is accepted: anything path-shaped would let a caller
+    # read a file outside the log directories this function is scoped to.
+    if requested != Path(requested).name:
+        raise ValueError(
+            f"Expected a log file name, not a path: '{file_name}'. Call "
+            f"list_ollama_logs for the available names."
+        )
+
+    log_files = _collect_log_files()
+    log_file = log_files.get(requested)
+
+    if log_file is None:
+        available = ", ".join(log_files) or "none"
+        write_log(
+            level="ERROR",
+            component=COMPONENT,
+            action="read_logs",
+            message="Ollama log file not found",
+            details={
+                "requested": requested,
+                "available": list(log_files),
+            },
+        )
+        raise FileNotFoundError(
+            f"No Ollama log file named '{requested}' (available: {available})"
+        )
+
+    stats = log_file.stat()
+    content = log_file.read_text(encoding="utf-8", errors="replace")
+
+    write_log(
+        level="INFO",
+        component=COMPONENT,
+        action="read_logs",
+        message="Ollama log file read",
+        details={
+            "name": requested,
+            "path": str(log_file),
+            "size_bytes": stats.st_size,
+        },
+    )
+
+    return {
+        "name": requested,
+        "path": str(log_file),
+        "size_bytes": stats.st_size,
+        "modified": time.strftime(
+            "%Y-%m-%d %H:%M:%S",
+            time.localtime(stats.st_mtime),
+        ),
+        "content": content,
+    }
 
 
 def install(
