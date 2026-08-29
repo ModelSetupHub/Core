@@ -156,17 +156,25 @@ def get_status() -> dict:
     return status
 
 
-def _get_log_directories() -> list[Path]:
-    """Build the list of directories Ollama may keep its log files in.
+def _collect_log_files() -> tuple[list[Path], dict[str, Path]]:
+    """Locate Ollama's log directories and index the log files they hold.
 
     Ollama does not expose its log location, so the documented per-platform
     directories are probed instead: ``%LOCALAPPDATA%\\Ollama`` on Windows and
-    ``~/.ollama/logs`` elsewhere. Both are listed on every platform because a
+    ``~/.ollama/logs`` elsewhere. Both are probed on every platform because a
     manually placed installation can use either, and only directories that
-    exist are returned.
+    exist are reported.
+
+    File names are unique within the index: when the same name appears in more
+    than one directory, the first directory in search order wins.
 
     Returns:
-        list[Path]: Existing log directories, most likely first.
+        tuple[list[Path], dict[str, Path]]: Existing log directories, most
+        likely first, and each log file name mapped to its full path, most
+        recently modified first.
+
+    Raises:
+        RuntimeError: If no Ollama log directory exists on this machine.
     """
     candidates: list[Path] = []
 
@@ -175,8 +183,7 @@ def _get_log_directories() -> list[Path]:
     if local_appdata:
         candidates.append(Path(local_appdata) / "Ollama")
 
-    home = Path.home()
-    candidates.append(home / ".ollama" / "logs")
+    candidates.append(Path.home() / ".ollama" / "logs")
 
     if os.name != "nt":
         candidates.append(Path("/var/log/ollama"))
@@ -196,53 +203,22 @@ def _get_log_directories() -> list[Path]:
         seen.add(resolved)
         directories.append(resolved)
 
-    return directories
+    if not directories:
+        write_log(
+            level="ERROR",
+            component=COMPONENT,
+            action="logs",
+            message="No Ollama log directory found",
+        )
+        raise RuntimeError(
+            "No Ollama log directory was found. Ollama logs to "
+            "%LOCALAPPDATA%\\Ollama on Windows and ~/.ollama/logs elsewhere; "
+            "neither exists, so Ollama has most likely never run on this machine."
+        )
 
-
-def _require_log_directories() -> list[Path]:
-    """Return Ollama's log directories, failing when none exists.
-
-    Returns:
-        list[Path]: Existing log directories.
-
-    Raises:
-        RuntimeError: If no Ollama log directory exists on this machine.
-    """
-    directories = _get_log_directories()
-
-    if directories:
-        return directories
-
-    write_log(
-        level="ERROR",
-        component=COMPONENT,
-        action="logs",
-        message="No Ollama log directory found",
-    )
-    raise RuntimeError(
-        "No Ollama log directory was found. Ollama logs to "
-        "%LOCALAPPDATA%\\Ollama on Windows and ~/.ollama/logs elsewhere; "
-        "neither exists, so Ollama has most likely never run on this machine."
-    )
-
-
-def _collect_log_files() -> dict[str, Path]:
-    """Index Ollama's log files by their file name.
-
-    Names are unique within the result: when the same name appears in more than
-    one log directory, the first directory to provide it wins, matching the
-    search order of ``_get_log_directories``.
-
-    Returns:
-        dict[str, Path]: File name mapped to its full path, most recently
-        modified first.
-
-    Raises:
-        RuntimeError: If no Ollama log directory exists on this machine.
-    """
     found: dict[str, Path] = {}
 
-    for directory in _require_log_directories():
+    for directory in directories:
         for log_file in directory.glob(LOG_FILE_GLOB):
             if log_file.is_file() and log_file.name not in found:
                 found[log_file.name] = log_file
@@ -255,7 +231,7 @@ def _collect_log_files() -> dict[str, Path]:
         reverse=True,
     )
 
-    return dict(ordered)
+    return directories, dict(ordered)
 
 
 def list_ollama_logs() -> dict:
@@ -263,36 +239,41 @@ def list_ollama_logs() -> dict:
 
     Names the ``*.log`` files Ollama keeps — the live ``app.log`` and
     ``server.log`` plus the rotated ``app-N.log`` and ``server-N.log`` copies —
-    with the size of each, without reading any of them. The sizes are what make
-    the choice informed: ``read_ollama_logs`` returns a whole file, and
-    ``server.log`` alone routinely runs past a megabyte. These are Ollama's own
-    logs, unrelated to this project's execution log that
-    ``core.logging.read_logs`` serves.
+    with the size and line count of each, returning no log content itself. Those
+    two measures are what make the choice informed: ``server.log`` alone
+    routinely runs past a megabyte, so a large file is worth reading through the
+    line range of ``read_ollama_logs`` rather than whole, and the line count is
+    the bound to aim that range at. These are Ollama's own logs, unrelated to
+    this project's execution log that ``core.logging.read_logs`` serves.
 
     Returns:
-        dict: Mapping with 'directories' searched, 'sizes' as a
-        ``{file name: size in bytes}`` dict, 'files' as a list of dicts
-        ('name', 'path', 'size_bytes', 'modified'), 'names' holding just the
-        file names, and 'total_bytes' summing them all. Every listing is
-        ordered most recently modified first.
+        dict: Mapping with 'directories' searched, 'files' as a list of dicts
+        ('name', 'path', 'size_bytes', 'line_count', 'modified') ordered most
+        recently modified first, and 'total_bytes' summing every file.
 
     Raises:
         RuntimeError: If no Ollama log directory exists on this machine.
+        OSError: If a listed log file cannot be read to count its lines.
     """
-    directories = _require_log_directories()
-    log_files = _collect_log_files()
+    directories, log_files = _collect_log_files()
 
     files = []
-    sizes: dict[str, int] = {}
 
     for name, path in log_files.items():
         stats = path.stat()
-        sizes[name] = stats.st_size
+
+        # Streamed rather than read whole, and counted the same way
+        # read_ollama_logs numbers its lines, so a count reported here is the
+        # bound a caller can pass straight back as end_line.
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            line_count = sum(1 for _ in handle)
+
         files.append(
             {
                 "name": name,
                 "path": str(path),
                 "size_bytes": stats.st_size,
+                "line_count": line_count,
                 "modified": time.strftime(
                     "%Y-%m-%d %H:%M:%S",
                     time.localtime(stats.st_mtime),
@@ -300,44 +281,57 @@ def list_ollama_logs() -> dict:
             }
         )
 
+    searched = [str(directory) for directory in directories]
+    total_bytes = sum(entry["size_bytes"] for entry in files)
+
     write_log(
         level="INFO",
         component=COMPONENT,
         action="list_logs",
         message="Ollama log files listed",
         details={
-            "directories": [str(directory) for directory in directories],
+            "directories": searched,
             "file_count": len(files),
-            "sizes": sizes,
+            "total_bytes": total_bytes,
         },
     )
 
     return {
-        "directories": [str(directory) for directory in directories],
-        "sizes": sizes,
+        "directories": searched,
         "files": files,
-        "names": list(log_files),
-        "total_bytes": sum(sizes.values()),
+        "total_bytes": total_bytes,
     }
 
 
-def read_ollama_logs(file_name: str) -> dict:
-    """Read one Ollama log file in full.
+def read_ollama_logs(
+    file_name: str,
+    start_line: int = 1,
+    end_line: int | None = None,
+) -> dict:
+    """Read one Ollama log file, whole or over a range of lines.
 
     The file is chosen by name from those ``list_ollama_logs`` reports; call that
     first. Only a bare file name is accepted, so a path cannot be used to reach
-    outside Ollama's own log directories, and the file's entire contents are
-    returned with nothing truncated.
+    outside Ollama's own log directories. Lines are numbered from 1 and the range
+    is inclusive on both ends, so ``start_line=100, end_line=200`` returns those
+    101 lines. Left at their defaults the whole file is returned. A range that
+    starts past the end of the file yields empty content rather than an error,
+    which is what makes 'total_lines' in the result worth checking when paging.
 
     Args:
         file_name: Log file name, for example 'server.log' or 'app-2.log'.
+        start_line: First line to return, 1-based. Defaults to the first line.
+        end_line: Last line to return, inclusive. Defaults to the final line.
 
     Returns:
-        dict: Mapping with 'name', 'path', 'size_bytes', 'modified', and
-        'content' holding the whole file.
+        dict: Mapping with 'name', 'path', 'size_bytes', 'modified',
+        'total_lines' counting the whole file, 'start_line' and 'end_line'
+        bounding the lines actually returned (both None when the range matched
+        nothing), and 'content' holding those lines.
 
     Raises:
-        ValueError: If the name is empty or contains a path separator.
+        ValueError: If the name is empty or contains a path separator, or the
+            line range is not a positive, non-descending pair.
         FileNotFoundError: If no log file of that name exists.
         RuntimeError: If no Ollama log directory exists on this machine.
         OSError: If the file exists but cannot be read.
@@ -355,7 +349,15 @@ def read_ollama_logs(file_name: str) -> dict:
             f"list_ollama_logs for the available names."
         )
 
-    log_files = _collect_log_files()
+    if start_line < 1:
+        raise ValueError(f"start_line must be 1 or greater, got {start_line}")
+
+    if end_line is not None and end_line < start_line:
+        raise ValueError(
+            f"end_line ({end_line}) must not be before start_line ({start_line})"
+        )
+
+    _, log_files = _collect_log_files()
     log_file = log_files.get(requested)
 
     if log_file is None:
@@ -375,7 +377,27 @@ def read_ollama_logs(file_name: str) -> dict:
         )
 
     stats = log_file.stat()
-    content = log_file.read_text(encoding="utf-8", errors="replace")
+    selected: list[str] = []
+    total_lines = 0
+
+    # Streamed a line at a time: the range exists so that a megabyte-sized
+    # server.log need not be held in memory to read a hundred lines out of it.
+    # The iteration continues past the range only to finish counting the lines,
+    # which is what tells a caller paging through the file where it ends.
+    with log_file.open(encoding="utf-8", errors="replace") as handle:
+        for number, line in enumerate(handle, start=1):
+            total_lines = number
+
+            if number < start_line:
+                continue
+
+            if end_line is not None and number > end_line:
+                continue
+
+            selected.append(line)
+
+    first_returned = start_line if selected else None
+    last_returned = start_line + len(selected) - 1 if selected else None
 
     write_log(
         level="INFO",
@@ -386,6 +408,9 @@ def read_ollama_logs(file_name: str) -> dict:
             "name": requested,
             "path": str(log_file),
             "size_bytes": stats.st_size,
+            "total_lines": total_lines,
+            "start_line": first_returned,
+            "end_line": last_returned,
         },
     )
 
@@ -397,7 +422,10 @@ def read_ollama_logs(file_name: str) -> dict:
             "%Y-%m-%d %H:%M:%S",
             time.localtime(stats.st_mtime),
         ),
-        "content": content,
+        "total_lines": total_lines,
+        "start_line": first_returned,
+        "end_line": last_returned,
+        "content": "".join(selected),
     }
 
 

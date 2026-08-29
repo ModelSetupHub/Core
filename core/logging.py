@@ -5,17 +5,12 @@ import json
 from pathlib import Path
 
 
-def get_execution_log_path() -> Path:
-    """Return the file path for the execution log.
+def _log_file_path() -> Path:
+    """Return the execution log's path, creating its directory when missing.
 
-    The log file is stored inside the repository's data directory:
-        Core/
-        ├── core/
-        │   └── logging.py
-        └── data/
-            └── executions.log
-
-    Creates the data directory if it does not already exist.
+    Kept separate from ``get_log_file_info`` so that appending a single entry
+    does not have to read the whole log: ``write_log`` runs on every logged
+    event and needs nothing but the path.
 
     Returns:
         Path: Absolute path to the execution log file.
@@ -26,6 +21,47 @@ def get_execution_log_path() -> Path:
     data_dir.mkdir(exist_ok=True)
 
     return data_dir / "executions.log"
+
+
+def get_log_file_info() -> dict:
+    """Describe the execution log file: where it is and how much it holds.
+
+    The log file is stored inside the repository's data directory:
+        Core/
+        ├── core/
+        │   └── logging.py
+        └── data/
+            └── executions.log
+
+    Creates the data directory if it does not already exist. A log that has
+    never been written to is reported at zero lines and zero bytes rather than
+    treated as an error, so this can be called before the first event.
+
+    Returns:
+        dict: Mapping with 'path' as the absolute ``Path`` to the log file,
+        'line_count' holding the number of entries it contains, and
+        'size_bytes' its size on disk.
+
+    Raises:
+        OSError: If the log file exists but cannot be read.
+    """
+    log_file = _log_file_path()
+
+    if not log_file.exists():
+        return {
+            "path": log_file,
+            "line_count": 0,
+            "size_bytes": 0,
+        }
+
+    with open(log_file, "r", encoding="utf-8") as file:
+        line_count = sum(1 for _ in file)
+
+    return {
+        "path": log_file,
+        "line_count": line_count,
+        "size_bytes": log_file.stat().st_size,
+    }
 
 
 def write_log(
@@ -62,7 +98,7 @@ def write_log(
         f"{json.dumps(details, ensure_ascii=False)}\n"
     )
 
-    log_file = get_execution_log_path()
+    log_file = _log_file_path()
 
     with open(log_file, "a", encoding="utf-8") as file:
         file.write(entry)
@@ -72,20 +108,35 @@ def read_logs(
     level: str | None = None,
     component: str | None = None,
     action: str | None = None,
+    line_count: int | None = None,
 ) -> list[dict]:
     """Read execution logs with optional filtering.
 
-    Filters are optional and can be combined to narrow down the query.
+    Filters are optional and can be combined to narrow down the query. The three
+    value filters select which entries match; ``line_count`` then caps how many
+    of those matches come back, keeping the most recent ones, since the log is
+    appended in chronological order and the newest entries are what a capped read
+    is usually after. Call ``get_log_file_info`` for the total the log holds
+    before deciding on a cap.
 
     Args:
         level: Optional log severity level to filter by (e.g., 'ERROR').
         component: Optional component name to filter by.
         action: Optional action name to filter by.
+        line_count: Optional maximum number of entries to return, counted back
+            from the newest match. Defaults to returning every match.
 
     Returns:
-        list[dict]: List of parsed log entry dictionaries matching the criteria.
+        list[dict]: List of parsed log entry dictionaries matching the criteria,
+        oldest first.
+
+    Raises:
+        ValueError: If line_count is given but is not 1 or greater.
     """
-    log_file = get_execution_log_path()
+    if line_count is not None and line_count < 1:
+        raise ValueError(f"line_count must be 1 or greater, got {line_count}")
+
+    log_file = _log_file_path()
 
     if not log_file.exists():
         return []
@@ -124,5 +175,10 @@ def read_logs(
                 continue
 
             results.append(log_data)
+
+            # Older matches beyond the cap are dropped as the file is read, so a
+            # long log costs no more memory than the number of entries asked for.
+            if line_count is not None and len(results) > line_count:
+                results.pop(0)
 
     return results
