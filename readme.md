@@ -9,7 +9,7 @@ Core backend toolkit for managing local AI environments, hardware discovery, Oll
 - **Ollama Runtime & Models (`core.ollama`)**: Controls the Ollama background daemon, manages local model lifecycles (create, run, stop, remove), and runs parameter benchmarks with token-speed metrics.
 - **Python Environment (`core.python`)**: Automates virtual environment (`venv`) lifecycle, package management via `pip`, script execution, and Windows Python installation discovery.
 - **Download Manager (`core.download_manager`)**: Multi-file sequential downloader featuring pause/resume, retries, speed and ETA calculation, and cancellation support.
-- **Cancellation (`core.cancellation`)**: Cooperative cancellation for the long-running operations — downloads, benchmarks and installations — with process-tree termination for subprocesses.
+- **Cancellation (`core.cancellation`)**: Cooperative cancellation for the long-running operations — downloads and benchmarks.
 - **Logging (`core.logging`)**: Structured JSON logging system with component-level tagging and action tracking.
 
 
@@ -31,7 +31,7 @@ core/
 ├── download_manager/
 │   ├── downloader.py        # Streamed HTTP/HTTPS downloader
 │   └── manager.py           # Queue and progress manager
-├── cancellation.py          # Cancellation tokens and cancellable subprocesses
+├── cancellation.py          # Cancellation tokens for downloads and benchmarks
 └── logging.py               # Structured event logging
 ```
 
@@ -102,7 +102,7 @@ tools.install_packages(["torch", "numpy"], environment=env_path)
 
 ### Cancelling a Long-Running Operation
 
-Downloads, benchmarks and installations accept a `CancellationToken`. Cancelling
+Downloads and benchmarks accept a `CancellationToken`. Cancelling
 is cooperative: the operation stops at its next safe point, undoes what it had
 done, and records a `WARNING` entry describing the cleanup — that log entry is the
 only thing a cancelled operation leaves behind.
