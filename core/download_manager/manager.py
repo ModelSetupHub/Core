@@ -10,7 +10,7 @@ import time
 from typing import Iterable
 from urllib.parse import urlparse
 
-from core.cancellation import log_cancelled
+from core.cancellation import CancellationToken, log_cancelled
 from core.logging import write_log
 from .downloader import (
     DownloadCancelled,
@@ -94,10 +94,8 @@ class DownloadManager:
 
         self._running = False
         self._paused = False
-        self._cancelled = False
         self._skip_requested = False
 
-        self._cancel_reason: str | None = None
         self._cleanup_on_cancel = True
         self._cleanup_done = False
         # Set once the session has been cancelled or closed. A closed session is
@@ -111,9 +109,11 @@ class DownloadManager:
         # Guards the queue and every flag above. It is re-entrant because the
         # cancellation path reads the status it is about to tear down.
         self._lock = threading.RLock()
-        # Signalled instead of polling `_cancelled`, so the worker and the
-        # keyboard listener wake immediately and exit on their own.
-        self._cancel_event = threading.Event()
+        # The cancel flag, its reason, and the event the worker and the keyboard
+        # listener wake on, all of which CancellationToken already provides. It
+        # is one-way by design, which suits a session that cannot be restarted
+        # once cancelled.
+        self._cancellation = CancellationToken()
         self._keyboard_stop = threading.Event()
 
 
@@ -216,8 +216,8 @@ class DownloadManager:
         if self._closed:
             raise SessionCancelled(
                 f"Cannot {attempt}: this download session was "
-                f"{'cancelled' if self._cancelled else 'closed'} and cannot be "
-                f"reused. Create a new session instead."
+                f"{'cancelled' if self._cancellation.cancelled else 'closed'} "
+                f"and cannot be reused. Create a new session instead."
             )
 
     # ========================================================
@@ -267,7 +267,9 @@ class DownloadManager:
             self._running = True
             self._paused = False
             self._skip_requested = False
-            self._cancel_event.clear()
+            # The cancel flag is deliberately not reset: `_raise_if_closed` above
+            # has already refused a cancelled session, so a start that gets this
+            # far has never been cancelled.
             self._keyboard_stop.clear()
 
             total = len(self._queue)
@@ -325,7 +327,7 @@ class DownloadManager:
         """Background worker loop executing sequential item downloads."""
         try:
             for index, item in enumerate(self._queue):
-                if self._cancel_event.is_set():
+                if self._cancellation.cancelled:
                     break
 
                 with self._lock:
@@ -355,7 +357,7 @@ class DownloadManager:
                     # A cancellation between the checks above and this assignment
                     # would otherwise never reach the new downloader, leaving it
                     # transferring after the session was cancelled.
-                    if self._cancel_event.is_set():
+                    if self._cancellation.cancelled:
                         item["status"] = "cancelled"
                         break
 
@@ -395,7 +397,7 @@ class DownloadManager:
                         continue
 
                     with self._lock:
-                        cancelled = self._cancel_event.is_set()
+                        cancelled = self._cancellation.cancelled
                         fetched = bool(item.get("downloaded"))
 
                         # A cancellation can land in the moment between the last
@@ -430,7 +432,7 @@ class DownloadManager:
                     self._skip_requested = False
 
                 except DownloadCancelled:
-                    if self._skip_requested and not self._cancel_event.is_set():
+                    if self._skip_requested and not self._cancellation.cancelled:
                         self._mark_skipped(index)
                         self._skip_requested = False
                     else:
@@ -490,7 +492,7 @@ class DownloadManager:
             # Queue finished. Anything still waiting when a cancellation stopped
             # the loop is marked cancelled, so no item is left claiming it is
             # about to run.
-            if self._cancel_event.is_set():
+            if self._cancellation.cancelled:
                 with self._lock:
                     for item in self._queue:
                         if item["status"] not in FINAL_STATUSES:
@@ -549,7 +551,7 @@ class DownloadManager:
             details: Metadata associated with the event.
         """
         with self._lock:
-            if self._cancel_event.is_set():
+            if self._cancellation.cancelled:
                 return
 
             item = self._queue[index]
@@ -648,7 +650,7 @@ class DownloadManager:
             total: Total expected bytes or None.
         """
         with self._lock:
-            if self._cancel_event.is_set():
+            if self._cancellation.cancelled:
                 return
 
             item = self._queue[index]
@@ -744,7 +746,7 @@ class DownloadManager:
         A cancelled session cannot be paused — there is nothing left to suspend.
         """
         with self._lock:
-            if not self._running or self._paused or self._cancel_event.is_set():
+            if not self._running or self._paused or self._cancellation.cancelled:
                 return
 
             self._paused = True
@@ -774,7 +776,7 @@ class DownloadManager:
             if not self._running or not self._paused:
                 return
 
-            if self._cancel_event.is_set():
+            if self._cancellation.cancelled:
                 # Resuming a cancelled session would restart a transfer whose
                 # files have already been deleted.
                 return
@@ -803,7 +805,7 @@ class DownloadManager:
     def skip(self) -> None:
         """Request skipping the currently active download."""
         with self._lock:
-            if not self._running or self._cancel_event.is_set():
+            if not self._running or self._cancellation.cancelled:
                 return
 
             self._skip_requested = True
@@ -853,7 +855,7 @@ class DownloadManager:
             cleanup: Whether to delete the files this session produced.
         """
         with self._lock:
-            if self._cancel_event.is_set():
+            if self._cancellation.cancelled:
                 # Already cancelled. The first call owns the cleanup, so this one
                 # must not repeat it or widen it from keep-files to delete.
                 return
@@ -862,11 +864,11 @@ class DownloadManager:
             running = self._running
             was_paused = self._paused
 
-            self._cancelled = True
             self._closed = True
-            self._cancel_reason = reason or "Cancelled by request"
             self._cleanup_on_cancel = cleanup and not finished
-            self._cancel_event.set()
+            # Sets the flag, keeps the reason, and wakes the worker and the
+            # keyboard listener, all in one call.
+            self._cancellation.cancel(reason)
             # A paused transfer is waiting on its pause flag, so it has to be
             # released for the cancellation to reach the chunk loop.
             self._paused = False
@@ -898,7 +900,7 @@ class DownloadManager:
             message="Download manager cancellation requested",
             details={
                 "file_index": file_index,
-                "reason": self._cancel_reason,
+                "reason": self._cancellation.reason,
                 "cleanup": cleanup,
                 "was_running": running,
             },
@@ -991,7 +993,7 @@ class DownloadManager:
             # Copied so the deletions below run without holding the lock: a
             # status poll must not block on the filesystem.
             queue = [dict(item) for item in self._queue]
-            reason = self._cancel_reason or "Cancelled by request"
+            reason = self._cancellation.reason or "Cancelled by request"
 
         removed: list[str] = []
         kept: list[str] = []
@@ -1096,17 +1098,19 @@ class DownloadManager:
                 for item in self._queue
             ]
 
+            cancelled = self._cancellation.cancelled
+
             return {
                 "running": self._running,
                 "paused": self._paused,
-                "cancelled": self._cancelled,
+                "cancelled": cancelled,
                 "closed": self._closed,
                 # Whether the cancellation deleted what the session produced. A
                 # close keeps the files, so a caller describing the outcome — or
                 # deciding whether a completed file is still on disk — needs to
                 # tell the two apart.
-                "files_deleted": self._cancelled and self._cleanup_on_cancel,
-                "cancel_reason": self._cancel_reason,
+                "files_deleted": cancelled and self._cleanup_on_cancel,
+                "cancel_reason": self._cancellation.reason,
                 "current_index": self._current_index,
                 "total_files": len(self._queue),
                 "downloads": downloads,

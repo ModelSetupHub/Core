@@ -7,6 +7,7 @@ import urllib.error
 import urllib.request
 
 from core.cancellation import (
+    POLL_INTERVAL,
     CancellationToken,
     OperationCancelled,
     log_cancelled,
@@ -48,8 +49,12 @@ def _generate(
         RuntimeError: If connection fails or Ollama returns an error payload.
         OperationCancelled: If the token is cancelled during generation.
     """
-    if cancellation is not None:
-        cancellation.raise_if_cancelled()
+    # A run without a token still has one, so every check below is a plain token
+    # call rather than a None test guarding it. A token nobody holds is never
+    # cancelled, which is exactly the uncancellable behaviour None asked for.
+    token = cancellation if cancellation is not None else CancellationToken()
+
+    token.raise_if_cancelled()
 
     payload = {
         "model": model,
@@ -80,7 +85,7 @@ def _generate(
     # the reader below is blocked in a socket read that no flag check can reach,
     # so the close is done from a watcher thread and surfaces here as a read
     # failure, which the cancellation check just after turns into a clean stop.
-    watcher = _CancelWatcher(response=response, cancellation=cancellation)
+    watcher = _CancelWatcher(response=response, cancellation=token)
     watcher.start()
 
     chunks: list[str] = []
@@ -88,8 +93,7 @@ def _generate(
 
     try:
         for line in response:
-            if cancellation is not None:
-                cancellation.raise_if_cancelled()
+            token.raise_if_cancelled()
 
             line = line.strip()
             if not line:
@@ -120,8 +124,7 @@ def _generate(
         # got: a URLError, an OSError, or an AttributeError from the emptied
         # buffer. So the token is consulted before the error is believed —
         # otherwise a cancellation would be recorded as a failed prompt.
-        if cancellation is not None:
-            cancellation.raise_if_cancelled()
+        token.raise_if_cancelled()
         raise RuntimeError(f"Failed to run model: {error}") from error
     finally:
         watcher.stop()
@@ -131,8 +134,7 @@ def _generate(
             pass
 
     if not final:
-        if cancellation is not None:
-            cancellation.raise_if_cancelled()
+        token.raise_if_cancelled()
         raise RuntimeError("Ollama closed the stream before finishing")
 
     final["response"] = "".join(chunks)
@@ -146,24 +148,21 @@ class _CancelWatcher:
     def __init__(
         self,
         response,
-        cancellation: CancellationToken | None,
+        cancellation: CancellationToken,
     ) -> None:
         """Prepare a watcher for one response.
 
         Args:
             response: Open HTTP response to close on cancellation.
-            cancellation: Token to watch; None makes the watcher inert.
+            cancellation: Token to watch.
         """
         self._response = response
         self._cancellation = cancellation
-        self._done = threading.Event()
+        self._consumed = threading.Event()
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
-        """Begin watching, unless there is no token to watch."""
-        if self._cancellation is None:
-            return
-
+        """Begin watching the response."""
         self._thread = threading.Thread(
             target=self._watch,
             name="ollama-generate-cancel",
@@ -173,19 +172,20 @@ class _CancelWatcher:
 
     def stop(self) -> None:
         """Stop watching once the response has been consumed."""
-        self._done.set()
+        self._consumed.set()
 
     def _watch(self) -> None:
         """Close the response when cancelled, or exit when it is consumed."""
-        while not self._done.is_set():
-            if self._cancellation is not None and self._cancellation.cancelled:
+        # Waits on the token rather than polling it, so a cancellation closes the
+        # socket at once; the interval only bounds how long the watcher takes to
+        # notice that the response was consumed and it can retire.
+        while not self._consumed.is_set():
+            if self._cancellation.wait(POLL_INTERVAL):
                 try:
                     self._response.close()
                 except Exception:
                     pass
                 return
-
-            self._done.wait(0.1)
 
 
 def run_test(
@@ -228,6 +228,11 @@ def run_test(
     if not isinstance(include_output, bool):
         raise TypeError("include_output must be a boolean")
 
+    # One token for the whole run, so the prompt loop, `_generate` and the
+    # watcher thread all consult the same flag whether or not a caller supplied
+    # one. An unsupplied token is simply never cancelled.
+    token = cancellation if cancellation is not None else CancellationToken()
+
     configuration = dict(config or {})
 
     write_log(
@@ -247,8 +252,7 @@ def run_test(
             if not isinstance(prompt, str):
                 raise TypeError(f"Prompt {index} must be a string")
 
-            if cancellation is not None:
-                cancellation.raise_if_cancelled()
+            token.raise_if_cancelled()
 
             try:
                 # Ensure the model is loaded before the test.
@@ -262,7 +266,7 @@ def run_test(
                     model=model,
                     prompt=prompt,
                     options=configuration,
-                    cancellation=cancellation,
+                    cancellation=token,
                 )
 
                 duration = time.perf_counter() - started_at
@@ -475,6 +479,10 @@ def compare_tests(
     if not isinstance(include_output, bool):
         raise TypeError("include_output must be a boolean")
 
+    # Shared with every `run_test` below, so one cancellation stops the whole
+    # comparison rather than only the configuration that was running.
+    token = cancellation if cancellation is not None else CancellationToken()
+
     normalized_configurations = []
 
     for index, configuration in enumerate(configurations, start=1):
@@ -509,8 +517,7 @@ def compare_tests(
     tests = []
 
     for configuration in normalized_configurations:
-        if cancellation is not None:
-            cancellation.raise_if_cancelled()
+        token.raise_if_cancelled()
 
         try:
             result = run_test(
@@ -519,7 +526,7 @@ def compare_tests(
                 config=configuration["options"],
                 name=configuration["name"],
                 include_output=include_output,
-                cancellation=cancellation,
+                cancellation=token,
             )
         except OperationCancelled as error:
             # run_test has already unloaded the model and logged its own
