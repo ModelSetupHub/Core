@@ -98,4 +98,3 @@ def scan_system() -> dict:
             },
         )
         raise
-

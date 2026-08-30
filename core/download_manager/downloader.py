@@ -9,14 +9,7 @@ import urllib.error
 from urllib.parse import urlparse
 import urllib.request
 
-ALLOWED_DOMAINS = {
-    "ollama.com",
-    "www.ollama.com",
-    "huggingface.co",
-    "www.huggingface.co",
-    "python.org",
-    "www.python.org",
-}
+from .sources import ALLOWED_DOMAINS
 
 
 class DownloadError(Exception):
@@ -61,10 +54,12 @@ class Downloader:
             url: The HTTP/HTTPS download URL.
             destination: Local file path where the completed download is saved.
             chunk_size: Stream read chunk size in bytes. Defaults to 1 MB.
-            max_retries: Maximum number of connection/download retry attempts. Defaults to 3.
-            connect_timeout: Timeout in seconds for establishing connection. Defaults to 15.
-            read_timeout: Timeout in seconds for socket read operations. Defaults to 30.
-            retry_delay: Delay multiplier in seconds between retries. Defaults to 3.
+            max_retries: Maximum number of download attempts. Defaults to 3.
+            connect_timeout: Seconds to wait for the connection. Defaults
+                to 15.
+            read_timeout: Seconds to wait on socket reads. Defaults to 30.
+            retry_delay: Delay multiplier in seconds between retries. Defaults
+                to 3.
         """
         self.url = url
         self.destination = destination
@@ -143,8 +138,10 @@ class Downloader:
         """Download the remote file with retry, resume, and progress tracking.
 
         Args:
-            progress_callback: Optional callable receiving (downloaded_bytes, total_bytes).
-            status_callback: Optional callable receiving (status_string, details_dict).
+            progress_callback: Optional callable receiving (downloaded_bytes,
+                total_bytes).
+            status_callback: Optional callable receiving (status_string,
+                details_dict).
 
         Raises:
             PermissionError: If the download URL domain is untrusted.
@@ -229,7 +226,8 @@ class Downloader:
         Raises:
             DownloadCancelled: If cancellation occurs during download.
             DownloadSkipped: If skip is requested during download.
-            DownloadError: If network error occurs or incomplete payload is received.
+            DownloadError: If a network error occurs or an incomplete payload
+                is received.
         """
         existing_size = 0
         if self.partial_file.exists():
@@ -258,8 +256,8 @@ class Downloader:
                 timeout=self.connect_timeout,
             )
         except urllib.error.HTTPError as error:
-            # HTTP 416 means the requested range is no longer valid.
-            # If the server says the file is already complete, consider it completed.
+            # HTTP 416 means the requested range is no longer valid. If the
+            # server says the file is already complete, treat it as completed.
             if error.code == 416:
                 remote_size = self._get_size_from_416(error)
                 if remote_size is not None and existing_size >= remote_size:
@@ -273,6 +271,11 @@ class Downloader:
             raise
         except (urllib.error.URLError, TimeoutError, OSError) as error:
             raise DownloadError(f"Connection failed: {error}") from error
+
+        # The connect timeout bounded the handshake; the chunk reads below get
+        # their own, longer budget so a slow mirror is not mistaken for a dead
+        # connection.
+        self._apply_read_timeout(response)
 
         self._emit_status(
             status_callback,
@@ -331,6 +334,8 @@ class Downloader:
                     if self.paused:
                         self._emit_status(status_callback, "paused", None)
 
+                    # Held here while paused so the partial file and the open
+                    # response both survive until resume, cancel or skip.
                     while self.paused:
                         if self.skipped:
                             raise DownloadSkipped()
@@ -364,7 +369,8 @@ class Downloader:
         # Validate file size
         if total_size is not None and downloaded < total_size:
             raise DownloadError(
-                "Connection interrupted before the expected file size was received."
+                "Connection interrupted before the expected file size was "
+                "received."
             )
 
         # Finalize file
@@ -375,6 +381,33 @@ class Downloader:
             "completed",
             {"size": downloaded},
         )
+
+    # ========================================================
+    # Timeouts
+    # ========================================================
+
+    def _apply_read_timeout(self, response) -> None:
+        """Switch an open response from the connect timeout to the read one.
+
+        ``urlopen`` takes a single timeout that covers both the handshake and
+        every later read, so the socket is retimed once the response is open.
+
+        Args:
+            response: Open HTTP response whose socket should be retimed.
+        """
+        socket = getattr(response, "fp", None)
+        socket = getattr(socket, "raw", socket)
+        socket = getattr(socket, "_sock", None)
+
+        if socket is None:
+            return
+
+        try:
+            socket.settimeout(self.read_timeout)
+        except OSError:
+            # An already-closed socket cannot be retimed; the read below will
+            # fail and be retried like any other transport error.
+            pass
 
     # ========================================================
     # HTTP 416 helper
@@ -416,7 +449,8 @@ class Downloader:
         """Emit a status event to the optional callback function.
 
         Args:
-            callback: Callable receiving status string and details dict, or None.
+            callback: Callable receiving status string and details dict, or
+                None.
             status: Status event name (e.g., 'connecting', 'completed').
             details: Event metadata payload or None.
         """

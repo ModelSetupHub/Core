@@ -1,4 +1,4 @@
-"""Sequential download queue manager with pause, resume, skip, and monitoring."""
+"""Sequential download queue manager with pause, resume, skip, monitoring."""
 
 from __future__ import annotations
 
@@ -18,27 +18,21 @@ from .downloader import (
     DownloadSkipped,
     Downloader,
 )
+from .sources import ALLOWED_DOMAINS
 
 COMPONENT = "download_manager"
-ALLOWED_DOMAINS = {
-    "ollama.com",
-    "www.ollama.com",
-    "huggingface.co",
-    "www.huggingface.co",
-    "python.org",
-    "www.python.org",
-}
 
-# Queue item states the worker must not process again on a later start. A failed
-# item is deliberately absent: restarting a session is how a failure is retried,
-# and `start` puts those items back to "waiting" itself.
+# Queue item states the worker must not process again on a later start. A
+# failed item is deliberately absent: restarting a session is how a failure is
+# retried, and `start` puts those items back to "waiting" itself.
 CONSUMED_STATUSES = frozenset({"completed", "skipped", "cancelled"})
 
 # Queue item states that mean the item will never run again.
 FINAL_STATUSES = frozenset({"completed", "skipped", "failed"})
 
-# How long `purge` waits for the worker to notice the cancellation and exit. The
-# worker stops at a chunk boundary, so this only has to cover one chunk read.
+# How long `purge` waits for the worker to notice the cancellation and exit.
+# The worker stops at a chunk boundary, so this only has to cover one chunk
+# read.
 WORKER_JOIN_TIMEOUT = 30.0
 
 
@@ -54,11 +48,11 @@ class SessionCancelled(RuntimeError):
 
 
 class DownloadManager:
-    """Sequential download manager handling queueing, speed, ETA, and worker threads.
+    """Sequential download manager handling queueing, speed, and workers.
 
     The manager handles:
         - Download queue
-        - Progress tracking and speed/ETA calculation
+        - Progress tracking and speed calculation
         - Automatic retry
         - Pause / Resume
         - Skip
@@ -76,11 +70,12 @@ class DownloadManager:
 
         Args:
             download_directory: Target folder path for downloaded files.
-            max_retries: Maximum download retry attempts per file. Defaults to 3.
+            max_retries: Maximum download retry attempts per file. Defaults
+                to 3.
         """
         self.download_directory = Path(download_directory)
-        # Whether this manager created the directory, so a cancellation knows if
-        # removing it again is its business.
+        # Whether this manager created the directory, so a cancellation knows
+        # if removing it again is its business.
         self._created_directory = not self.download_directory.exists()
         self.download_directory.mkdir(
             parents=True,
@@ -98,9 +93,10 @@ class DownloadManager:
 
         self._cleanup_on_cancel = True
         self._cleanup_done = False
-        # Set once the session has been cancelled or closed. A closed session is
-        # finished for good: its queue is gone, so accepting a new file or a
-        # second start would silently re-download what the cancellation removed.
+        # Set once the session has been cancelled or closed. A closed session
+        # is finished for good: its queue is gone, so accepting a new file or a
+        # second start would silently re-download what the cancellation
+        # removed.
         self._closed = False
 
         self._worker_thread: threading.Thread | None = None
@@ -109,13 +105,12 @@ class DownloadManager:
         # Guards the queue and every flag above. It is re-entrant because the
         # cancellation path reads the status it is about to tear down.
         self._lock = threading.RLock()
-        # The cancel flag, its reason, and the event the worker and the keyboard
-        # listener wake on, all of which CancellationToken already provides. It
-        # is one-way by design, which suits a session that cannot be restarted
-        # once cancelled.
+        # The cancel flag, its reason, and the event the worker and the
+        # keyboard listener wake on, all of which CancellationToken already
+        # provides. It is one-way by design, which suits a session that cannot
+        # be restarted once cancelled.
         self._cancellation = CancellationToken()
         self._keyboard_stop = threading.Event()
-
 
     def _verify_download_source(self, url: str) -> None:
         """Verify that a URL domain is in the allowed whitelist.
@@ -145,12 +140,14 @@ class DownloadManager:
 
         Args:
             url: Remote file HTTP/HTTPS URL.
-            filename: Optional custom target filename. If not provided, inferred from URL.
+            filename: Optional custom target filename. If not provided, it is
+                inferred from the URL.
 
         Raises:
             ValueError: If the URL is empty.
             PermissionError: If the domain is not in the whitelist.
-            SessionCancelled: If the session has already been cancelled or closed.
+            SessionCancelled: If the session has already been cancelled or
+                closed.
         """
         if not url:
             raise ValueError("URL cannot be empty.")
@@ -171,6 +168,7 @@ class DownloadManager:
                 "status": "waiting",
                 "downloaded": 0,
                 "total": None,
+                "speed": 0.0,
                 "error": None,
             }
 
@@ -227,14 +225,14 @@ class DownloadManager:
     def start(self) -> None:
         """Start background worker threads to process the download queue.
 
-        Only items that have not already run are processed: a completed, skipped
-        or cancelled item is left alone, so restarting a partly-finished session
-        never downloads the same file twice. A previously failed item is retried,
-        which is the point of restarting one.
+        Only items that have not already run are processed: a completed,
+        skipped or cancelled item is left alone, so restarting a session that
+        is part-finished never downloads the same file twice. A previously
+        failed item is retried, which is the point of restarting one.
 
         Raises:
-            RuntimeError: If the download queue is empty, or every item in it has
-                already run.
+            RuntimeError: If the download queue is empty, or every item in it
+                has already run.
             SessionCancelled: If the session has been cancelled or closed.
         """
         with self._lock:
@@ -258,8 +256,9 @@ class DownloadManager:
                     "skipped or cancelled."
                 )
 
-            # A retry starts from "waiting" so the worker and any watcher see one
-            # consistent set of states rather than a stale "failed" or "paused".
+            # A retry starts from "waiting" so the worker and any watcher see
+            # one consistent set of states rather than a stale "failed" or
+            # "paused".
             for item in pending:
                 item["status"] = "waiting"
                 item["error"] = None
@@ -267,9 +266,9 @@ class DownloadManager:
             self._running = True
             self._paused = False
             self._skip_requested = False
-            # The cancel flag is deliberately not reset: `_raise_if_closed` above
-            # has already refused a cancelled session, so a start that gets this
-            # far has never been cancelled.
+            # The cancel flag is deliberately not reset: `_raise_if_closed`
+            # above has already refused a cancelled session, so a start that
+            # gets this far has never been cancelled.
             self._keyboard_stop.clear()
 
             total = len(self._queue)
@@ -307,9 +306,9 @@ class DownloadManager:
     def _console_input_available() -> bool:
         """Report whether this process has a console to read keys from.
 
-        The listener exists for a user running the manager from a terminal. Under
-        a server — where stdin is a pipe carrying the protocol — reading keys
-        would consume that stream, so the listener is not started at all.
+        The listener exists for a user running the manager from a terminal.
+        Under a server — where stdin is a pipe carrying the protocol — reading
+        keys would consume that stream, so the listener is not started at all.
 
         Returns:
             bool: True when stdin is an interactive console.
@@ -334,8 +333,8 @@ class DownloadManager:
                     self._current_index = index
 
                     # Anything already run is left as it is. Without this a
-                    # restart would re-download a completed file and a cancelled
-                    # item would come back to life.
+                    # restart would re-download a completed file and a
+                    # cancelled item would come back to life.
                     if item["status"] in CONSUMED_STATUSES:
                         continue
 
@@ -354,9 +353,10 @@ class DownloadManager:
                         max_retries=self.max_retries,
                     )
 
-                    # A cancellation between the checks above and this assignment
-                    # would otherwise never reach the new downloader, leaving it
-                    # transferring after the session was cancelled.
+                    # A cancellation between the checks above and this
+                    # assignment would otherwise never reach the new
+                    # downloader, leaving it transferring after the session was
+                    # cancelled.
                     if self._cancellation.cancelled:
                         item["status"] = "cancelled"
                         break
@@ -384,9 +384,8 @@ class DownloadManager:
                             )
                         ),
                         status_callback=(
-                            lambda status, details, i=index: self._status_event(
-                                i, status, details
-                            )
+                            lambda status, details, i=index:
+                            self._status_event(i, status, details)
                         ),
                     )
 
@@ -400,15 +399,17 @@ class DownloadManager:
                         cancelled = self._cancellation.cancelled
                         fetched = bool(item.get("downloaded"))
 
-                        # A cancellation can land in the moment between the last
-                        # chunk and here. The cleanup is about to delete this
-                        # file, so recording it as completed would leave the queue
-                        # naming something no longer on disk. A file the session
-                        # did not actually fetch keeps its completed status: that
-                        # is how the cleanup recognises a pre-existing file it
-                        # must not delete.
+                        # A cancellation can land in the moment between the
+                        # last chunk and here. The cleanup is about to delete
+                        # this file, so recording it as completed would leave
+                        # the queue naming something no longer on disk. A file
+                        # the session did not actually fetch keeps its
+                        # completed status: that is how the cleanup recognises
+                        # a pre-existing file it must not delete.
                         item["status"] = (
-                            "cancelled" if cancelled and fetched else "completed"
+                            "cancelled"
+                            if cancelled and fetched
+                            else "completed"
                         )
 
                     if cancelled:
@@ -418,7 +419,9 @@ class DownloadManager:
                         level="INFO",
                         component=COMPONENT,
                         action="download_complete",
-                        message=f"Download {index + 1} of {total_files} completed",
+                        message=(
+                            f"Download {index + 1} of {total_files} completed"
+                        ),
                         details={
                             "file_index": index + 1,
                             "total_files": total_files,
@@ -432,7 +435,10 @@ class DownloadManager:
                     self._skip_requested = False
 
                 except DownloadCancelled:
-                    if self._skip_requested and not self._cancellation.cancelled:
+                    if (
+                        self._skip_requested
+                        and not self._cancellation.cancelled
+                    ):
                         self._mark_skipped(index)
                         self._skip_requested = False
                     else:
@@ -442,7 +448,10 @@ class DownloadManager:
                             level="WARNING",
                             component=COMPONENT,
                             action="download_cancelled",
-                            message=f"Download {index + 1} of {total_files} cancelled",
+                            message=(
+                                f"Download {index + 1} of {total_files} "
+                                f"cancelled"
+                            ),
                             details={
                                 "file_index": index + 1,
                                 "filename": filename,
@@ -459,7 +468,9 @@ class DownloadManager:
                         level="ERROR",
                         component=COMPONENT,
                         action="download_failed",
-                        message=f"Download {index + 1} of {total_files} failed",
+                        message=(
+                            f"Download {index + 1} of {total_files} failed"
+                        ),
                         details={
                             "file_index": index + 1,
                             "total_files": total_files,
@@ -489,9 +500,9 @@ class DownloadManager:
                     with self._lock:
                         self._current_downloader = None
 
-            # Queue finished. Anything still waiting when a cancellation stopped
-            # the loop is marked cancelled, so no item is left claiming it is
-            # about to run.
+            # Queue finished. Anything still waiting when a cancellation
+            # stopped the loop is marked cancelled, so no item is left claiming
+            # it is about to run.
             if self._cancellation.cancelled:
                 with self._lock:
                     for item in self._queue:
@@ -523,10 +534,9 @@ class DownloadManager:
                 self._running = False
                 self._paused = False
                 self._current_downloader = None
-            # The listener polls this to know when to exit, so it is set whichever
-            # way the queue ended.
+            # The listener polls this to know when to exit, so it is set
+            # whichever way the queue ended.
             self._keyboard_stop.set()
-
 
     # ========================================================
     # Status Events
@@ -641,8 +651,8 @@ class DownloadManager:
         """Update downloaded bytes and the item's transfer speed.
 
         Progress from a cancelled session is dropped: the bytes it reports are
-        about to be deleted, and recording them would make a cancelled item look
-        like it was still transferring.
+        about to be deleted, and recording them would make a cancelled item
+        look like it was still transferring.
 
         Args:
             index: Queue item index.
@@ -670,6 +680,10 @@ class DownloadManager:
             elapsed = now - progress_state["start"]
             if elapsed > 0:
                 progress_state["speed"] = downloaded / elapsed
+
+            # Mirrored onto the item itself so `get_status`, which hides the
+            # underscore-prefixed bookkeeping, can report it.
+            item["speed"] = progress_state["speed"]
 
     # ========================================================
     # Skip
@@ -740,13 +754,18 @@ class DownloadManager:
     def pause(self) -> None:
         """Pause the current download and active manager loop.
 
-        Suspends the transfer without ending the task: the queue and the partial
-        data are kept, and :meth:`resume` continues the active file from where it
-        stopped. To end the task and remove what it produced, use :meth:`cancel`.
-        A cancelled session cannot be paused — there is nothing left to suspend.
+        Suspends the transfer without ending the task: the queue and the
+        partial data are kept, and :meth:`resume` continues the active file
+        from where it stopped. To end the task and remove what it produced, use
+        :meth:`cancel`. A cancelled session cannot be paused — there is nothing
+        left to suspend.
         """
         with self._lock:
-            if not self._running or self._paused or self._cancellation.cancelled:
+            if (
+                not self._running
+                or self._paused
+                or self._cancellation.cancelled
+            ):
                 return
 
             self._paused = True
@@ -836,19 +855,19 @@ class DownloadManager:
     ) -> None:
         """Cancel the session and, by default, remove everything it produced.
 
-        The active download stops at its next chunk boundary and the rest of the
-        queue is abandoned. With ``cleanup`` left on, everything the session
-        produced is then removed — partial files, and completed files too — so a
-        cancelled download leaves nothing behind but its log entry. Pass
-        ``cleanup=False`` to keep what had already finished.
+        The active download stops at its next chunk boundary and the rest of
+        the queue is abandoned. With ``cleanup`` left on, everything the
+        session produced is then removed — partial files, and completed files
+        too — so a cancelled download leaves nothing behind but its log entry.
+        Pass ``cleanup=False`` to keep what had already finished.
 
         Either way the session is closed: its queue is emptied and it will not
-        accept another file or another start, because the work it was tracking no
-        longer exists. Safe to call more than once, and at any stage — before the
-        queue was started, mid-transfer, or after it finished.
+        accept another file or another start, because the work it was tracking
+        no longer exists. Safe to call more than once, and at any stage: before
+        the queue was started, mid-transfer, or after it finished.
 
-        To suspend a download and keep the task, use :meth:`pause` instead; this
-        ends it.
+        To suspend a download and keep the task, use :meth:`pause` instead;
+        this ends it.
 
         Args:
             reason: Optional explanation recorded with the cancellation.
@@ -856,8 +875,8 @@ class DownloadManager:
         """
         with self._lock:
             if self._cancellation.cancelled:
-                # Already cancelled. The first call owns the cleanup, so this one
-                # must not repeat it or widen it from keep-files to delete.
+                # Already cancelled. The first call owns the cleanup, so this
+                # one must not repeat it or widen it from keep-files to delete.
                 return
 
             finished = self._is_finished()
@@ -885,7 +904,8 @@ class DownloadManager:
 
         if downloader:
             # Cancels the downloader outside the lock: it only sets a flag, but
-            # the chunk loop calling back into _progress would otherwise contend.
+            # the chunk loop calling back into _progress would otherwise
+            # contend.
             downloader.cancel()
 
         if was_paused and downloader:
@@ -907,8 +927,8 @@ class DownloadManager:
         )
 
         if not running:
-            # A queue that already finished delivered its files, so cancelling it
-            # has nothing to undo and must not delete them.
+            # A queue that already finished delivered its files, so cancelling
+            # it has nothing to undo and must not delete them.
             if cleanup and not finished:
                 self._cleanup_cancelled()
             else:
@@ -917,8 +937,8 @@ class DownloadManager:
     def close(self, reason: str | None = None) -> None:
         """End the session without deleting what it downloaded.
 
-        Bookkeeping counterpart to :meth:`cancel`: the transfer is stopped and the
-        session is closed, but the files it produced are left on disk.
+        Bookkeeping counterpart to :meth:`cancel`: the transfer is stopped and
+        the session is closed, but the files it produced are left on disk.
 
         Args:
             reason: Optional explanation recorded with the closure.
@@ -928,9 +948,9 @@ class DownloadManager:
     def wait_until_stopped(self, timeout: float | None = None) -> bool:
         """Block until the worker thread has exited.
 
-        A cancellation returns as soon as it has been signalled, so a caller that
-        needs the session to be genuinely idle — before reporting the cleanup done,
-        or before starting a replacement — waits here.
+        A cancellation returns as soon as it has been signalled, so a caller
+        that needs the session to be genuinely idle — before reporting the
+        cleanup done, or before starting a replacement — waits here.
 
         Args:
             timeout: Seconds to wait at most; None waits indefinitely.
@@ -950,9 +970,9 @@ class DownloadManager:
     def _is_finished(self) -> bool:
         """Report whether the queue ran to completion.
 
-        Distinguishes a queue that finished from one that was never started or was
-        abandoned part-way: cancelling the first has nothing to undo, while the
-        others may have partial files to remove. Called with the lock held.
+        Distinguishes a queue that finished from one that was never started or
+        was abandoned part-way: cancelling the first has nothing to undo, while
+        the others may have partial files to remove. Called with the lock held.
 
         Returns:
             bool: True when every queued item reached a final state and none is
@@ -966,7 +986,6 @@ class DownloadManager:
             for item in self._queue
         )
 
-
     # ========================================================
     # Cancellation cleanup
     # ========================================================
@@ -976,11 +995,12 @@ class DownloadManager:
 
         A cancelled download is meant to leave no trace, so both the ``.part``
         files of interrupted transfers and the files that had finished are
-        removed: the queue was a single unit of work that did not complete, and
-        half a set of model files is not a useful thing to leave on disk. A file
-        that was already there before the session started is never touched —
-        ``Downloader`` reports those as completed without downloading them, so
-        they are identified by having no partial file and no bytes recorded.
+        removed: the queue was a single unit of work that did not complete,
+        and half a set of model files is not a useful thing to leave on disk.
+        A file that was already there before the session started is never
+        touched — ``Downloader`` reports those as completed without downloading
+        them, so they are identified by having no partial file and no bytes
+        recorded.
 
         The download directory itself is removed only when this manager created
         it and it is left empty.
@@ -1035,12 +1055,13 @@ class DownloadManager:
                 pass
 
         with self._lock:
-            # The bytes recorded against each item described files that no longer
-            # exist, so they are cleared along with them.
+            # The bytes recorded against each item described files that no
+            # longer exist, so they are cleared along with them.
             for item in self._queue:
                 if item["filename"] not in kept:
                     item["downloaded"] = 0
                     item["total"] = None
+                    item["speed"] = 0.0
                 item.pop("_progress_state", None)
 
         log_cancelled(
@@ -1084,9 +1105,10 @@ class DownloadManager:
         """Get the current manager state and queue details.
 
         Returns:
-            dict: Current manager status including running/paused/cancelled states,
-                current index, and download items. The queue entries are copies,
-                so a caller can read them while the worker keeps writing.
+            dict: Current manager status including running/paused/cancelled
+                states, current index, and download items, each carrying its
+                'speed' in bytes per second. The queue entries are copies, so a
+                caller can read them while the worker keeps writing.
         """
         with self._lock:
             downloads = [
@@ -1106,9 +1128,9 @@ class DownloadManager:
                 "cancelled": cancelled,
                 "closed": self._closed,
                 # Whether the cancellation deleted what the session produced. A
-                # close keeps the files, so a caller describing the outcome — or
-                # deciding whether a completed file is still on disk — needs to
-                # tell the two apart.
+                # close keeps the files, so a caller describing the outcome —
+                # or deciding whether a completed file is still on disk — needs
+                # to tell the two apart.
                 "files_deleted": cancelled and self._cleanup_on_cancel,
                 "cancel_reason": self._cancellation.reason,
                 "current_index": self._current_index,
@@ -1123,30 +1145,3 @@ class DownloadManager:
     def wait(self) -> None:
         """Block until the download worker thread finishes."""
         self.wait_until_stopped()
-
-
-    # ========================================================
-    # Utilities
-    # ========================================================
-
-    @staticmethod
-    def _format_time(seconds: float) -> str:
-        """Format seconds into HH:MM:SS or MM:SS format.
-
-        Args:
-            seconds: Duration in seconds.
-
-        Returns:
-            str: Formatted time string.
-        """
-        if seconds < 0:
-            return "--:--"
-
-        seconds = int(seconds)
-        hours, remainder = divmod(seconds, 3600)
-        minutes, seconds = divmod(remainder, 60)
-
-        if hours:
-            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-
-        return f"{minutes:02d}:{seconds:02d}"

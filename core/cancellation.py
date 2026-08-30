@@ -38,8 +38,8 @@ class CancellationToken:
     """Thread-safe cancel flag shared with a running operation.
 
     The operation and the caller requesting the cancellation are always on
-    different threads, so the flag is an :class:`threading.Event`: setting it is
-    atomic and a waiter can block on it instead of sleeping in a loop.
+    different threads, so the flag is a :class:`threading.Event`: setting it
+    is atomic and a waiter can block on it instead of sleeping in a loop.
     """
 
     def __init__(self) -> None:
@@ -106,8 +106,8 @@ def log_cancelled(
     """Record that an operation was cancelled.
 
     Cancelling is meant to leave nothing behind except this entry, so every
-    operation calls it on the way out — that log line is the only lasting trace a
-    cancelled operation is allowed to leave.
+    operation calls it on the way out — that log line is the only lasting
+    trace a cancelled operation is allowed to leave.
 
     Args:
         component: Component the operation belongs to.
@@ -122,5 +122,3 @@ def log_cancelled(
         message=message,
         details=details or {},
     )
-
-

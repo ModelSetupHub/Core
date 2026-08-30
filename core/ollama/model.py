@@ -19,7 +19,7 @@ def _run_command(command: list[str]) -> subprocess.CompletedProcess:
         command: List of command arguments.
 
     Returns:
-        subprocess.CompletedProcess: Execution result containing returncode, stdout, and stderr.
+        subprocess.CompletedProcess: Result with returncode, stdout, stderr.
     """
     return subprocess.run(
         command,
@@ -282,10 +282,12 @@ def load_model(
 
     Args:
         model: Model name to load.
-        keep_alive: Duration string to keep the model loaded (e.g., '10m', '1h'). Defaults to '10m'.
+        keep_alive: Duration string to keep the model loaded (e.g., '10m',
+            '1h'). Defaults to '10m'.
 
     Returns:
-        dict | None: Generation API response dict if loaded, or None if already loaded.
+        dict | None: Generation API response dict if loaded, or None if the
+            model was already loaded.
 
     Raises:
         ValueError: If model name is empty.
@@ -323,6 +325,8 @@ def load_model(
 
     requested_model = model.strip()
 
+    # Ollama reports loaded models with an explicit tag, so a bare name such as
+    # "llama3" must also match the ":latest" form it was loaded under.
     for item in data.get("models", []):
         loaded_model = item.get("name", "").strip()
 

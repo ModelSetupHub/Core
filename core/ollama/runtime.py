@@ -196,8 +196,9 @@ def _collect_log_files() -> tuple[list[Path], dict[str, Path]]:
         )
         raise RuntimeError(
             "No Ollama log directory was found. Ollama logs to "
-            "%LOCALAPPDATA%\\Ollama on Windows and ~/.ollama/logs elsewhere; "
-            "neither exists, so Ollama has most likely never run on this machine."
+            "%LOCALAPPDATA%\\Ollama on Windows and ~/.ollama/logs "
+            "elsewhere; neither exists, so Ollama has most likely never run "
+            "on this machine."
         )
 
     found: dict[str, Path] = {}
@@ -223,12 +224,13 @@ def list_ollama_logs() -> dict:
 
     Names the ``*.log`` files Ollama keeps — the live ``app.log`` and
     ``server.log`` plus the rotated ``app-N.log`` and ``server-N.log`` copies —
-    with the size and line count of each, returning no log content itself. Those
-    two measures are what make the choice informed: ``server.log`` alone
-    routinely runs past a megabyte, so a large file is worth reading through the
-    line range of ``read_ollama_logs`` rather than whole, and the line count is
-    the bound to aim that range at. These are Ollama's own logs, unrelated to
-    this project's execution log that ``core.logging.read_logs`` serves.
+    with the size and line count of each, returning no log content itself.
+    Those two measures are what make the choice informed: ``server.log`` alone
+    routinely runs past a megabyte, so a large file is worth reading through
+    the line range of ``read_ollama_logs`` rather than whole, and the line
+    count is the bound to aim that range at. These are Ollama's own logs,
+    unrelated to this project's execution log that
+    ``core.logging.read_logs`` serves.
 
     Returns:
         dict: Mapping with 'directories' searched, 'files' as a list of dicts
@@ -294,13 +296,14 @@ def read_ollama_logs(
 ) -> dict:
     """Read one Ollama log file, whole or over a range of lines.
 
-    The file is chosen by name from those ``list_ollama_logs`` reports; call that
-    first. Only a bare file name is accepted, so a path cannot be used to reach
-    outside Ollama's own log directories. Lines are numbered from 1 and the range
-    is inclusive on both ends, so ``start_line=100, end_line=200`` returns those
-    101 lines. Left at their defaults the whole file is returned. A range that
-    starts past the end of the file yields empty content rather than an error,
-    which is what makes 'total_lines' in the result worth checking when paging.
+    The file is chosen by name from those ``list_ollama_logs`` reports; call
+    that first. Only a bare file name is accepted, so a path cannot be used to
+    reach outside Ollama's own log directories. Lines are numbered from 1 and
+    the range is inclusive on both ends, so ``start_line=100, end_line=200``
+    returns those 101 lines. Left at their defaults the whole file is returned.
+    A range that starts past the end of the file yields empty content rather
+    than an error, which is what makes 'total_lines' in the result worth
+    checking when paging.
 
     Args:
         file_name: Log file name, for example 'server.log' or 'app-2.log'.
@@ -338,7 +341,8 @@ def read_ollama_logs(
 
     if end_line is not None and end_line < start_line:
         raise ValueError(
-            f"end_line ({end_line}) must not be before start_line ({start_line})"
+            f"end_line ({end_line}) must not be before "
+            f"start_line ({start_line})"
         )
 
     _, log_files = _collect_log_files()
@@ -577,7 +581,8 @@ def stop(
         timeout: Maximum seconds to wait for shutdown. Defaults to 10.0.
 
     Raises:
-        RuntimeError: If termination command fails or process does not stop in time.
+        RuntimeError: If termination fails or the process does not stop in
+            time.
     """
     if not _is_installed():
         write_log(
@@ -665,4 +670,3 @@ def stop(
         action="stop",
         message="Ollama stopped successfully",
     )
-

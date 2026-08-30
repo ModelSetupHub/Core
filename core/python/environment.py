@@ -106,19 +106,23 @@ def get_python_path(
     """Get the absolute path to the Python executable.
 
     Args:
-        environment: Optional path to a virtual environment. If None, current interpreter path is returned.
+        environment: Optional path to a virtual environment. If None, the
+            running interpreter's path is returned.
 
     Returns:
         str: Absolute path to the Python interpreter executable.
 
     Raises:
-        FileNotFoundError: If the Python binary within the environment cannot be found.
+        FileNotFoundError: If the Python binary inside the environment cannot
+            be found.
     """
     if environment is None:
         return sys.executable
 
     environment_path = Path(environment).expanduser().resolve()
 
+    # Virtual environments place the interpreter in Scripts/ on Windows and
+    # bin/ everywhere else.
     if sys.platform == "win32":
         python_path = environment_path / "Scripts" / "python.exe"
     else:

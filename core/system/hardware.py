@@ -30,6 +30,8 @@ def run_command(command: list[str], timeout: int = 5) -> str | None:
         if result.returncode == 0:
             return result.stdout.strip()
     except Exception:
+        # Hardware probing is best-effort: a missing tool, a timeout or a
+        # permission error all mean "unknown" rather than a failed scan.
         pass
 
     return None
@@ -63,8 +65,8 @@ def get_system_info() -> dict:
     """Get operating system identification and version details.
 
     Returns:
-        dict: Dictionary containing OS name, version, build number, architecture,
-            and Python version.
+        dict: Dictionary containing OS name, version, build number,
+            architecture, and Python version.
     """
     system_name = platform.system()
 
@@ -87,7 +89,8 @@ def get_system_info() -> dict:
             "powershell",
             "-NoProfile",
             "-Command",
-            "(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion').DisplayVersion",
+            "(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT"
+            "\\CurrentVersion').DisplayVersion",
         ])
 
         return {
@@ -111,8 +114,9 @@ def get_cpu_info() -> dict:
     """Get detailed CPU hardware and clock frequency information.
 
     Returns:
-        dict: Dictionary containing CPU model name, architecture, physical core count,
-            logical thread count, reported clock speed, current frequency, and max frequency.
+        dict: Dictionary containing CPU model name, architecture, physical core
+            count, logical thread count, reported clock speed, current
+            frequency, and max frequency.
     """
     cpu_name = run_command([
         "powershell",
@@ -221,8 +225,9 @@ def get_ram_modules() -> list[dict]:
     """Get physical RAM module specifications and slot layout on Windows.
 
     Returns:
-        list[dict]: List of RAM module dictionaries with manufacturer, part number,
-            capacity, speed, configured speed, memory type, and slot location.
+        list[dict]: List of RAM module dictionaries with manufacturer, part
+            number, capacity, speed, configured speed, memory type, and slot
+            location.
     """
     if platform.system() != "Windows":
         return []

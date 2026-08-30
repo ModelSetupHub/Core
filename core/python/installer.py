@@ -7,6 +7,8 @@ import sys
 try:
     import winreg
 except ImportError:
+    # Non-Windows platforms have no registry; detection falls back to the
+    # running interpreter only.
     winreg = None
 
 from core.logging import write_log
@@ -22,7 +24,8 @@ def install_python(
 
     Args:
         installer_path: Path to the Python installer executable.
-        all_users: Whether to install Python for all system users. Defaults to False.
+        all_users: Whether to install Python for all system users. Defaults to
+            False.
 
     Returns:
         list[dict]: List of detected Python versions and executable paths.
@@ -98,6 +101,8 @@ def get_python_status() -> list[dict]:
     versions = []
 
     if winreg is not None:
+        # Per-machine installs live under HKLM and per-user ones under HKCU, so
+        # both hives are enumerated.
         locations = [
             (
                 winreg.HKEY_LOCAL_MACHINE,
@@ -111,29 +116,33 @@ def get_python_status() -> list[dict]:
 
         for hive, key_path in locations:
             try:
-                key = winreg.OpenKey(
-                    hive,
-                    key_path,
-                )
+                with winreg.OpenKey(hive, key_path) as key:
+                    index = 0
 
-                index = 0
+                    while True:
+                        try:
+                            version = winreg.EnumKey(key, index)
+                        except OSError:
+                            # Raised once the versions are exhausted, which is
+                            # how this loop terminates.
+                            break
 
-                while True:
-                    try:
-                        version = winreg.EnumKey(
-                            key,
-                            index,
-                        )
+                        index += 1
 
-                        install_path_key = winreg.OpenKey(
-                            key,
-                            f"{version}\\InstallPath",
-                        )
-
-                        install_path, _ = winreg.QueryValueEx(
-                            install_path_key,
-                            None,
-                        )
+                        # A version whose InstallPath is missing or unreadable
+                        # is skipped on its own; enumeration continues so one
+                        # malformed entry cannot hide the versions after it.
+                        try:
+                            with winreg.OpenKey(
+                                key,
+                                f"{version}\\InstallPath",
+                            ) as install_path_key:
+                                install_path, _ = winreg.QueryValueEx(
+                                    install_path_key,
+                                    None,
+                                )
+                        except OSError:
+                            continue
 
                         python_path = Path(install_path) / "python.exe"
 
@@ -143,14 +152,12 @@ def get_python_status() -> list[dict]:
                                 "path": str(python_path),
                             })
 
-                        index += 1
-
-                    except OSError:
-                        break
-
-            except FileNotFoundError:
+            except OSError:
+                # The hive has no PythonCore key at all.
                 continue
 
+    # The running interpreter is always reported, even when it was not
+    # registered in the registry (a venv, or a portable install).
     current = {
         "version": sys.version.split()[0],
         "path": sys.executable,

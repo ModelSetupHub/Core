@@ -30,10 +30,10 @@ def _generate(
     The configuration options are applied only to this specific request.
 
     The request is streamed so a cancellation can take effect mid-generation:
-    with a single buffered response there is no point between sending the prompt
-    and receiving the whole answer at which the operation could stop. The final
-    streamed object carries the same timing and token fields a buffered response
-    would, so the returned dictionary is unchanged.
+    with a single buffered response there is no point between sending the
+    prompt and receiving the whole answer at which the operation could stop.
+    The final streamed object carries the same timing and token fields a
+    buffered response would, so the returned dictionary is unchanged.
 
     Args:
         model: Ollama model identifier tag.
@@ -49,9 +49,10 @@ def _generate(
         RuntimeError: If connection fails or Ollama returns an error payload.
         OperationCancelled: If the token is cancelled during generation.
     """
-    # A run without a token still has one, so every check below is a plain token
-    # call rather than a None test guarding it. A token nobody holds is never
-    # cancelled, which is exactly the uncancellable behaviour None asked for.
+    # A run without a token still has one, so every check below is a plain
+    # token call rather than a None test guarding it. A token nobody holds is
+    # never cancelled, which is exactly the uncancellable behaviour None asked
+    # for.
     token = cancellation if cancellation is not None else CancellationToken()
 
     token.raise_if_cancelled()
@@ -81,10 +82,11 @@ def _generate(
     except (urllib.error.URLError, TimeoutError, OSError) as error:
         raise RuntimeError(f"Failed to run model: {error}") from error
 
-    # Closing the response is what actually interrupts a generation in progress:
-    # the reader below is blocked in a socket read that no flag check can reach,
-    # so the close is done from a watcher thread and surfaces here as a read
-    # failure, which the cancellation check just after turns into a clean stop.
+    # Closing the response is what actually interrupts a generation in
+    # progress: the reader below is blocked in a socket read that no flag check
+    # can reach, so the close is done from a watcher thread and surfaces here
+    # as a read failure, which the cancellation check just after turns into a
+    # clean stop.
     watcher = _CancelWatcher(response=response, cancellation=token)
     watcher.start()
 
@@ -119,11 +121,12 @@ def _generate(
         # Already a described failure — an error payload or malformed JSON.
         raise
     except Exception as error:
-        # Interrupting a generation means closing the socket out from under this
-        # reader, and what that surfaces as depends on how far the response had
-        # got: a URLError, an OSError, or an AttributeError from the emptied
-        # buffer. So the token is consulted before the error is believed —
-        # otherwise a cancellation would be recorded as a failed prompt.
+        # Interrupting a generation means closing the socket out from under
+        # this reader, and what that surfaces as depends on how far the
+        # response had got: a URLError, an OSError, or an AttributeError from
+        # the emptied buffer. So the token is consulted before the error is
+        # believed — otherwise a cancellation would be recorded as a failed
+        # prompt.
         token.raise_if_cancelled()
         raise RuntimeError(f"Failed to run model: {error}") from error
     finally:
@@ -176,9 +179,9 @@ class _CancelWatcher:
 
     def _watch(self) -> None:
         """Close the response when cancelled, or exit when it is consumed."""
-        # Waits on the token rather than polling it, so a cancellation closes the
-        # socket at once; the interval only bounds how long the watcher takes to
-        # notice that the response was consumed and it can retire.
+        # Waits on the token rather than polling it, so a cancellation closes
+        # the socket at once; the interval only bounds how long the watcher
+        # takes to notice that the response was consumed and it can retire.
         while not self._consumed.is_set():
             if self._cancellation.wait(POLL_INTERVAL):
                 try:
@@ -206,15 +209,18 @@ def run_test(
         prompts: List of prompt strings to execute.
         config: Optional model parameter dictionary.
         name: Identifier name for the test run. Defaults to 'test'.
-        include_output: Whether to include the generated text in results. Defaults to False.
-        cancellation: Optional token that stops the run between or during prompts.
+        include_output: Whether to include the generated text in results.
+            Defaults to False.
+        cancellation: Optional token that stops the run between or during
+            prompts.
 
     Returns:
         dict: Test execution results and summary statistics.
 
     Raises:
-        ValueError: If model name is empty, prompts list is empty.
-        TypeError: If include_output is not boolean or any prompt is not a string.
+        ValueError: If model name is empty or prompts list is empty.
+        TypeError: If include_output is not boolean or any prompt is not a
+            string.
         OperationCancelled: If the token is cancelled. Partial results are
             discarded and the model this run loaded is unloaded first, so a
             cancelled run leaves nothing behind but its log entry.
@@ -253,6 +259,10 @@ def run_test(
                 raise TypeError(f"Prompt {index} must be a string")
 
             token.raise_if_cancelled()
+
+            # Reset per prompt: a failure before the timer starts must not
+            # report the previous prompt's start time.
+            started_at: float | None = None
 
             try:
                 # Ensure the model is loaded before the test.
@@ -315,8 +325,12 @@ def run_test(
                         "duration_seconds": result["duration_seconds"],
                         "prompt_tokens": result["prompt_tokens"],
                         "output_tokens": result["output_tokens"],
-                        "prompt_tokens_per_second": result["prompt_tokens_per_second"],
-                        "output_tokens_per_second": result["output_tokens_per_second"],
+                        "prompt_tokens_per_second": (
+                            result["prompt_tokens_per_second"]
+                        ),
+                        "output_tokens_per_second": (
+                            result["output_tokens_per_second"]
+                        ),
                         "done": result["done"],
                     },
                 )
@@ -329,7 +343,7 @@ def run_test(
             except Exception as error:
                 duration = (
                     time.perf_counter() - started_at
-                    if "started_at" in locals()
+                    if started_at is not None
                     else 0.0
                 )
 
@@ -453,8 +467,10 @@ def compare_tests(
     Args:
         model: Ollama model name.
         prompts: List of evaluation prompt strings.
-        configurations: List of configuration dictionaries with 'name' and 'options'.
-        include_output: Whether to include generated output in test results. Defaults to False.
+        configurations: List of configuration dictionaries with 'name' and
+            'options'.
+        include_output: Whether to include generated output in test results.
+            Defaults to False.
         cancellation: Optional token that stops the comparison part-way.
 
     Returns:
@@ -531,7 +547,8 @@ def compare_tests(
         except OperationCancelled as error:
             # run_test has already unloaded the model and logged its own
             # cancellation; discard the finished configurations so no partial
-            # comparison survives, and record what the comparison as a whole lost.
+            # comparison survives, and record what the comparison as a whole
+            # lost.
             log_cancelled(
                 component=COMPONENT,
                 action="compare",
@@ -574,7 +591,8 @@ def _build_summary(results: list[dict]) -> dict:
         results: List of successful test result dictionaries.
 
     Returns:
-        dict: Summary statistics including average durations, rates, and token counts.
+        dict: Summary statistics including average durations, rates, and token
+            counts.
     """
     if not results:
         return {

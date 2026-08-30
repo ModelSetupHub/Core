@@ -160,7 +160,19 @@ def create_script(
     path: str,
     content: str,
 ) -> str:
-    """Create a new Python script file on disk."""
+    """Create a new Python script file on disk.
+
+    Args:
+        path: Target script path; must end in '.py'.
+        content: Script source text to write.
+
+    Returns:
+        str: Resolved absolute path to the created script.
+
+    Raises:
+        ValueError: If the path does not have a .py extension.
+        FileExistsError: If a file already exists at that path.
+    """
     if Path(path).suffix.lower() != ".py":
         raise ValueError("Script path must have a .py extension")
 
@@ -192,11 +204,59 @@ def create_script(
     return str(script)
 
 
+def read_script(path: str) -> str:
+    """Read the contents of an existing Python script file.
+
+    Args:
+        path: Path to the script; must end in '.py'.
+
+    Returns:
+        str: Source text of the script.
+
+    Raises:
+        ValueError: If the path does not have a .py extension.
+        FileNotFoundError: If the script does not exist.
+    """
+    if Path(path).suffix.lower() != ".py":
+        raise ValueError("Script path must have a .py extension")
+
+    script = Path(path).expanduser().resolve()
+
+    if not script.is_file():
+        raise FileNotFoundError(f"Script not found: {script}")
+
+    content = script.read_text(encoding="utf-8")
+
+    write_log(
+        level="INFO",
+        component=COMPONENT,
+        action="read_script",
+        message="Script read successfully",
+        details={
+            "path": str(script),
+        },
+    )
+
+    return content
+
+
 def edit_script(
     path: str,
     content: str,
 ) -> str:
-    """Overwrite the contents of an existing Python script file."""
+    """Overwrite the contents of an existing Python script file.
+
+    Args:
+        path: Path to the existing script; must end in '.py'.
+        content: Replacement source text.
+
+    Returns:
+        str: Resolved absolute path to the updated script.
+
+    Raises:
+        ValueError: If the path does not have a .py extension.
+        FileNotFoundError: If the script does not exist.
+    """
     if Path(path).suffix.lower() != ".py":
         raise ValueError("Script path must have a .py extension")
 
@@ -224,7 +284,18 @@ def edit_script(
 
 
 def delete_script(path: str) -> str:
-    """Delete a Python script file from disk."""
+    """Delete a Python script file from disk.
+
+    Args:
+        path: Path to the script to delete; must end in '.py'.
+
+    Returns:
+        str: Resolved absolute path of the deleted script.
+
+    Raises:
+        ValueError: If the path does not have a .py extension.
+        FileNotFoundError: If the script does not exist.
+    """
     if Path(path).suffix.lower() != ".py":
         raise ValueError("Script path must have a .py extension")
 
@@ -252,7 +323,21 @@ def run_script(
     path: str,
     environment: str | None = None,
 ) -> str:
-    """Execute a Python script using the specified environment."""
+    """Execute a Python script using the specified environment.
+
+    Args:
+        path: Path to the script to run; must end in '.py'.
+        environment: Optional path to the virtual environment whose interpreter
+            should run the script.
+
+    Returns:
+        str: Standard output produced by the script.
+
+    Raises:
+        ValueError: If the path does not have a .py extension.
+        FileNotFoundError: If the script does not exist.
+        RuntimeError: If the script exits with a non-zero status.
+    """
     if Path(path).suffix.lower() != ".py":
         raise ValueError("Script path must have a .py extension")
 

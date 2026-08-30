@@ -15,7 +15,7 @@ def _log_file_path() -> Path:
     Returns:
         Path: Absolute path to the execution log file.
     """
-    # logging.py is inside core/, so move one level up to reach the repository root
+    # logging.py lives in core/, so the repository root is one level up
     repo_root = Path(__file__).resolve().parent.parent
     data_dir = repo_root / "data"
     data_dir.mkdir(exist_ok=True)
@@ -78,8 +78,8 @@ def write_log(
 
     Args:
         level: Log severity (e.g., 'INFO', 'WARNING', 'ERROR').
-        component: System component originating the event (e.g., 'runtime', 'download').
-        action: Operation being performed (e.g., 'install', 'start', 'download').
+        component: System component originating the event (e.g., 'runtime').
+        action: Operation being performed (e.g., 'install', 'start').
         message: Human-readable description of the log event.
         details: Optional dictionary containing additional event metadata.
     """
@@ -104,6 +104,46 @@ def write_log(
         file.write(entry)
 
 
+def _parse_log_line(line: str) -> dict | None:
+    """Parse one raw log line into its fields.
+
+    Args:
+        line: Raw line as read from the log file.
+
+    Returns:
+        dict | None: Parsed entry, or None if the line is malformed or its
+        details are not valid JSON.
+    """
+    # Only the four leading fields are delimiter-free, so the split stops there
+    # and the message and details are separated afterwards.
+    parts = line.strip().split(" | ", 4)
+
+    if len(parts) != 5:
+        return None
+
+    # The message and the JSON details may both contain " | ", so the boundary
+    # between them is found by taking the longest trailing segment that parses
+    # as JSON. Everything before it is the message.
+    segments = parts[4].split(" | ")
+
+    for position in range(1, len(segments)):
+        try:
+            details = json.loads(" | ".join(segments[position:]))
+        except json.JSONDecodeError:
+            continue
+
+        return {
+            "timestamp": parts[0],
+            "level": parts[1],
+            "component": parts[2],
+            "action": parts[3],
+            "message": " | ".join(segments[:position]),
+            "details": details,
+        }
+
+    return None
+
+
 def read_logs(
     level: str | None = None,
     component: str | None = None,
@@ -112,12 +152,12 @@ def read_logs(
 ) -> list[dict]:
     """Read execution logs with optional filtering.
 
-    Filters are optional and can be combined to narrow down the query. The three
-    value filters select which entries match; ``line_count`` then caps how many
-    of those matches come back, keeping the most recent ones, since the log is
-    appended in chronological order and the newest entries are what a capped read
-    is usually after. Call ``get_log_file_info`` for the total the log holds
-    before deciding on a cap.
+    Filters are optional and can be combined to narrow down the query. The
+    three value filters select which entries match; ``line_count`` then caps
+    how many of those matches come back, keeping the most recent ones, since
+    the log is appended in chronological order and the newest entries are what
+    a capped read is usually after. Call ``get_log_file_info`` for the total
+    the log holds before deciding on a cap.
 
     Args:
         level: Optional log severity level to filter by (e.g., 'ERROR').
@@ -127,8 +167,8 @@ def read_logs(
             from the newest match. Defaults to returning every match.
 
     Returns:
-        list[dict]: List of parsed log entry dictionaries matching the criteria,
-        oldest first.
+        list[dict]: List of parsed log entry dictionaries matching the
+        criteria, oldest first.
 
     Raises:
         ValueError: If line_count is given but is not 1 or greater.
@@ -145,23 +185,10 @@ def read_logs(
 
     with open(log_file, "r", encoding="utf-8") as file:
         for line in file:
-            parts = line.strip().split(" | ")
+            log_data = _parse_log_line(line)
 
-            # Ignore invalid log lines
-            if len(parts) != 6:
-                continue
-
-            try:
-                log_data = {
-                    "timestamp": parts[0],
-                    "level": parts[1],
-                    "component": parts[2],
-                    "action": parts[3],
-                    "message": parts[4],
-                    "details": json.loads(parts[5]),
-                }
-            except json.JSONDecodeError:
-                # Skip corrupted log entries
+            # Ignore invalid or corrupted log lines
+            if log_data is None:
                 continue
 
             # Apply filters only when provided
@@ -176,8 +203,9 @@ def read_logs(
 
             results.append(log_data)
 
-            # Older matches beyond the cap are dropped as the file is read, so a
-            # long log costs no more memory than the number of entries asked for.
+            # Older matches beyond the cap are dropped as the file is read, so
+            # a long log costs no more memory than the number of entries asked
+            # for.
             if line_count is not None and len(results) > line_count:
                 results.pop(0)
 
