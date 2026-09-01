@@ -15,7 +15,7 @@ def _log_file_path() -> Path:
     Returns:
         Path: Absolute path to the execution log file.
     """
-    # logging.py lives in core/, so the repository root is one level up
+    # logging.py lives in MSHCore/, so the repository root is one level up
     repo_root = Path(__file__).resolve().parent.parent
     data_dir = repo_root / "data"
     data_dir.mkdir(exist_ok=True)
@@ -28,7 +28,7 @@ def get_log_file_info() -> dict:
 
     The log file is stored inside the repository's data directory:
         Core/
-        ├── core/
+        ├── MSHCore/
         │   └── logging.py
         └── data/
             └── executions.log

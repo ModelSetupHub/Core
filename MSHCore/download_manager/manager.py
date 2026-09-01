@@ -10,8 +10,8 @@ import time
 from typing import Iterable
 from urllib.parse import urlparse
 
-from core.cancellation import CancellationToken, log_cancelled
-from core.logging import write_log
+from MSHCore.cancellation import CancellationToken, log_cancelled
+from MSHCore.logging import write_log
 from .downloader import (
     DownloadCancelled,
     DownloadError,

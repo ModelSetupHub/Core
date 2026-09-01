@@ -3,4 +3,4 @@ data
 test.py
 .vscode
 .venv
-model_setup_hub_core.egg-info/
+MSHCore.egg-info/

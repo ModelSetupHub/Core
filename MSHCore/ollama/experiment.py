@@ -6,14 +6,14 @@ import time
 import urllib.error
 import urllib.request
 
-from core.cancellation import (
+from MSHCore.cancellation import (
     POLL_INTERVAL,
     CancellationToken,
     OperationCancelled,
     log_cancelled,
 )
-from core.logging import write_log
-from core.ollama import model as model_api
+from MSHCore.logging import write_log
+from MSHCore.ollama import model as model_api
 
 COMPONENT = "ollama/experiment"
 OLLAMA_GENERATE_URL = "http://127.0.0.1:11434/api/generate"

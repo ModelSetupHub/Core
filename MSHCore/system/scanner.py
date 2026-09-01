@@ -1,6 +1,6 @@
 """System scanner orchestrator that aggregates hardware and OS diagnostics."""
 
-from core.logging import write_log
+from MSHCore.logging import write_log
 from .hardware import (
     bytes_to_gb,
     get_cpu_features,

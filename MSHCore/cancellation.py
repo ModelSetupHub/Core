@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import threading
 
-from core.logging import write_log
+from MSHCore.logging import write_log
 
 COMPONENT = "cancellation"
 

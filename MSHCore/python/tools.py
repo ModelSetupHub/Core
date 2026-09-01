@@ -3,8 +3,8 @@
 from pathlib import Path
 import subprocess
 
-from core.logging import write_log
-from core.python.environment import get_python_path
+from MSHCore.logging import write_log
+from MSHCore.python.environment import get_python_path
 
 COMPONENT = "python"
 

@@ -11,7 +11,7 @@ except ImportError:
     # running interpreter only.
     winreg = None
 
-from core.logging import write_log
+from MSHCore.logging import write_log
 
 COMPONENT = "python"
 

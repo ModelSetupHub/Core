@@ -7,7 +7,7 @@ import tempfile
 import urllib.error
 import urllib.request
 
-from core.logging import write_log
+from MSHCore.logging import write_log
 
 COMPONENT = "ollama/model"
 

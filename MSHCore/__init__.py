@@ -1,0 +1,1 @@
+"""MSHCore package."""

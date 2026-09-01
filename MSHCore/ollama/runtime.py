@@ -8,7 +8,7 @@ import time
 import urllib.error
 import urllib.request
 
-from core.logging import write_log
+from MSHCore.logging import write_log
 
 COMPONENT = "ollama/runtime"
 OLLAMA_API_URL = "http://127.0.0.1:11434/api/tags"
@@ -230,7 +230,7 @@ def list_ollama_logs() -> dict:
     the line range of ``read_ollama_logs`` rather than whole, and the line
     count is the bound to aim that range at. These are Ollama's own logs,
     unrelated to this project's execution log that
-    ``core.logging.read_logs`` serves.
+    ``MSHCore.logging.read_logs`` serves.
 
     Returns:
         dict: Mapping with 'directories' searched, 'files' as a list of dicts

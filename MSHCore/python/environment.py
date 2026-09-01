@@ -5,7 +5,7 @@ import shutil
 import subprocess
 import sys
 
-from core.logging import write_log
+from MSHCore.logging import write_log
 
 COMPONENT = "python"
 

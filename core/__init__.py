@@ -1,1 +1,0 @@
-"""ModelSetupHub core package."""

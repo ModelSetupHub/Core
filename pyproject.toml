@@ -1,5 +1,5 @@
 [project]
-name = "model-setup-hub-core"
+name = "MSHCore"
 version = "0.1.0"
 requires-python = ">=3.10"
 
@@ -9,4 +9,4 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["core*"]
+include = ["MSHCore*"]
