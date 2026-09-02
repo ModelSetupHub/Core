@@ -2,6 +2,9 @@
 name = "MSHCore"
 version = "0.1.0"
 requires-python = ">=3.10"
+dependencies = [
+    "psutil>=7.0.0",
+]
 
 [build-system]
 requires = ["setuptools>=61.0"]

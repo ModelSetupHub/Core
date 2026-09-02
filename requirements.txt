@@ -1,0 +1,4 @@
+# MSHCore dependencies. Also declared in pyproject.toml, so `pip install .`
+# pulls them in; everything else comes from the standard library.
+
+psutil>=7.0.0
