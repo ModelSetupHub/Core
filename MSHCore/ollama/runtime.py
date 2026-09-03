@@ -86,6 +86,9 @@ def _get_version() -> str | None:
             text=True,
             check=False,
             timeout=5,
+            # This process may be an MCP server whose stdin carries the JSON-RPC
+            # stream, and a child inheriting it could read the protocol's bytes.
+            stdin=subprocess.DEVNULL,
         )
     except (
         OSError,
@@ -462,6 +465,9 @@ def install(
             encoding="utf-8",
             errors="replace",
             check=False,
+            # An installer that decides to prompt must not read this process's
+            # stdin: under an MCP server that stream is the JSON-RPC transport.
+            stdin=subprocess.DEVNULL,
         )
     except Exception as error:
         write_log(
@@ -532,6 +538,7 @@ def start(
     try:
         subprocess.Popen(
             ["ollama", "serve"],
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=(
@@ -619,6 +626,7 @@ def stop(
                     "ollama.exe",
                 ],
                 check=False,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -631,6 +639,7 @@ def stop(
                     "ollama",
                 ],
                 check=False,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )

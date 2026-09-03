@@ -44,6 +44,10 @@ def install_packages(
         encoding="utf-8",
         errors="replace",
         check=False,
+        # This process may be an MCP server whose stdin carries the JSON-RPC
+        # stream. A child inheriting it could read the protocol's bytes, so every
+        # child here is given an empty stdin instead.
+        stdin=subprocess.DEVNULL,
     )
 
     if result.returncode != 0:
@@ -97,6 +101,7 @@ def uninstall_packages(
         encoding="utf-8",
         errors="replace",
         check=False,
+        stdin=subprocess.DEVNULL,
     )
 
     if result.returncode != 0:
@@ -146,6 +151,7 @@ def list_packages(
         encoding="utf-8",
         errors="replace",
         check=False,
+        stdin=subprocess.DEVNULL,
     )
 
     if result.returncode != 0:
@@ -358,6 +364,9 @@ def run_script(
         encoding="utf-8",
         errors="replace",
         check=False,
+        # An empty stdin also means a script that reads input gets EOF and
+        # exits, rather than blocking for ever on a stream it must not touch.
+        stdin=subprocess.DEVNULL,
     )
 
     if result.returncode != 0:

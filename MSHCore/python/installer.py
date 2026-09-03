@@ -60,6 +60,10 @@ def install_python(
         encoding="utf-8",
         errors="replace",
         check=False,
+        # The installer runs quietly, but an installer that decides to prompt
+        # must not read this process's stdin: under an MCP server that stream is
+        # the JSON-RPC transport.
+        stdin=subprocess.DEVNULL,
     )
 
     if result.returncode != 0:

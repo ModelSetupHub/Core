@@ -8,17 +8,17 @@ import sys
 import threading
 import time
 from typing import Iterable
-from urllib.parse import urlparse
 
 from MSHCore.cancellation import CancellationToken, log_cancelled
 from MSHCore.logging import write_log
 from .downloader import (
     DownloadCancelled,
+    DownloadConflict,
     DownloadError,
     DownloadSkipped,
     Downloader,
 )
-from .sources import ALLOWED_DOMAINS
+from .sources import verify_download_source
 
 COMPONENT = "download_manager"
 
@@ -34,6 +34,11 @@ FINAL_STATUSES = frozenset({"completed", "skipped", "failed"})
 # The worker stops at a chunk boundary, so this only has to cover one chunk
 # read.
 WORKER_JOIN_TIMEOUT = 30.0
+
+# How many numeric suffixes a colliding filename is offered before queueing it
+# is refused. Reached only when a thousand variants of one name are already
+# present, which is a caller looping rather than a name to disambiguate.
+MAX_FILENAME_ATTEMPTS = 1000
 
 
 class SessionCancelled(RuntimeError):
@@ -86,6 +91,11 @@ class DownloadManager:
         self._queue: list[dict] = []
         self._current_downloader: Downloader | None = None
         self._current_index = -1
+        # Filenames this session actually wrote to, which is what a cancellation
+        # is allowed to delete. A file that was already on disk is never in here:
+        # the download is renamed around it, or refused outright, so cleanup
+        # cannot remove something the session did not produce.
+        self._produced: set[str] = set()
 
         self._running = False
         self._paused = False
@@ -113,19 +123,139 @@ class DownloadManager:
         self._keyboard_stop = threading.Event()
 
     def _verify_download_source(self, url: str) -> None:
-        """Verify that a URL domain is in the allowed whitelist.
+        """Verify that a URL's scheme and host are on the whitelist.
+
+        Delegates to
+        :func:`MSHCore.download_manager.sources.verify_download_source`, which
+        the downloader also calls, so queueing and transferring accept exactly
+        the same URLs. The host is taken from ``urlparse(...).hostname``, so a
+        port or a ``user@`` prefix cannot disguise a foreign host, and Hugging
+        Face's CDN subdomains are accepted because a download link redirects
+        onto one.
 
         Args:
             url: URL string to validate.
 
         Raises:
-            PermissionError: If the URL domain is not in ALLOWED_DOMAINS.
+            DownloadSourceRejected: If the scheme is not http or https, or the
+                domain is not allowed. A ``PermissionError``, as before, whose
+                message names the rejected domain and lists the allowed ones.
         """
-        domain = urlparse(url).netloc.lower()
-        if domain not in ALLOWED_DOMAINS:
-            raise PermissionError(
-                f"Access denied: domain '{domain}' is not allowed."
+        verify_download_source(url)
+
+    def _unique_filename(
+        self,
+        filename: str,
+        ignore_index: int | None = None,
+    ) -> str:
+        """Return a filename that is free in the download directory.
+
+        Two repositories publishing ``model.safetensors`` used to collide: the
+        second file found the first already on disk and was reported completed
+        without being fetched. Rather than refuse the queue, the second is given
+        a numbered name — ``model-1.safetensors``, then ``model-2.safetensors``
+        — so both files arrive and neither is overwritten. Names already claimed
+        by another item in this queue count as taken too, since that file has
+        not been written yet.
+
+        Called with the lock held.
+
+        Args:
+            filename: Name the caller asked for, or the one inferred from the
+                URL.
+            ignore_index: Queue position whose own claim on the name is
+                disregarded, used when re-checking an item that is already
+                queued.
+
+        Returns:
+            str: ``filename`` itself when nothing holds that name, otherwise the
+            first free ``name-N.ext`` variant.
+
+        Raises:
+            RuntimeError: If no free variant is found within
+                ``MAX_FILENAME_ATTEMPTS``.
+        """
+        queued = {
+            item["filename"]
+            for position, item in enumerate(self._queue)
+            if position != ignore_index
+        }
+
+        def taken(candidate: str) -> bool:
+            # The partial file counts: a transfer interrupted under that name is
+            # resumable, and handing the name to a different URL would append
+            # one file's bytes onto another's.
+            destination = self.download_directory / candidate
+
+            return (
+                candidate in queued
+                or destination.exists()
+                or Path(str(destination) + ".part").exists()
             )
+
+        if not taken(filename):
+            return filename
+
+        stem = Path(filename).stem
+        suffix = "".join(Path(filename).suffixes)
+
+        for number in range(1, MAX_FILENAME_ATTEMPTS + 1):
+            candidate = f"{stem}-{number}{suffix}"
+
+            if not taken(candidate):
+                return candidate
+
+        raise RuntimeError(
+            f"Could not find a free filename for '{filename}' in "
+            f"{self.download_directory} after {MAX_FILENAME_ATTEMPTS} "
+            f"attempts."
+        )
+
+    def _resolve_destination(self, index: int) -> tuple[str, bool]:
+        """Re-check an item's filename immediately before it is downloaded.
+
+        Queueing chose a free name, but time passes before the transfer starts:
+        another session writing into the same directory, or a file the user
+        dropped there, can claim it in between. The name is therefore resolved
+        again here, and any partial data this item had already fetched moves with
+        it so a resume still picks up where it left off.
+
+        Called with the lock held.
+
+        Args:
+            index: Queue position of the item about to be downloaded.
+
+        Returns:
+            tuple[str, bool]: The filename to download under, and whether it had
+            to change.
+        """
+        item = self._queue[index]
+        current = item["filename"]
+        destination = self.download_directory / current
+
+        if not destination.exists():
+            return current, False
+
+        resolved = self._unique_filename(current, ignore_index=index)
+
+        partial = Path(str(destination) + ".part")
+
+        if partial.exists():
+            # Bytes already fetched under the old name: carried across so the
+            # range request still resumes rather than starting again.
+            try:
+                partial.replace(
+                    Path(str(self.download_directory / resolved) + ".part")
+                )
+            except OSError:
+                # The resume is a bonus, not the point; the transfer restarts
+                # from zero under the new name.
+                pass
+
+        item["filename"] = resolved
+        item["requested_filename"] = item.get("requested_filename") or current
+
+        return resolved, True
 
     # ========================================================
     # Queue
@@ -138,6 +268,14 @@ class DownloadManager:
     ) -> None:
         """Add a file URL to the sequential download queue.
 
+        The destination name is disambiguated when something already holds it —
+        a file or partial file on disk, or an earlier item in this queue — so two
+        repositories' ``model.safetensors`` become ``model.safetensors`` and
+        ``model-1.safetensors`` and both are actually downloaded. The name the
+        file will be saved under is recorded on the queue item and reported by
+        :meth:`get_status`; ``requested_filename`` carries the original when they
+        differ.
+
         Args:
             url: Remote file HTTP/HTTPS URL.
             filename: Optional custom target filename. If not provided, it is
@@ -145,9 +283,10 @@ class DownloadManager:
 
         Raises:
             ValueError: If the URL is empty.
-            PermissionError: If the domain is not in the whitelist.
+            PermissionError: If the scheme or domain is not on the whitelist.
             SessionCancelled: If the session has already been cancelled or
                 closed.
+            RuntimeError: If no free filename could be found.
         """
         if not url:
             raise ValueError("URL cannot be empty.")
@@ -162,9 +301,20 @@ class DownloadManager:
                     or f"download_{len(self._queue) + 1}"
                 )
 
+            # Only the bare name: a URL path or a caller-supplied one must not
+            # be able to write outside the download directory.
+            requested = Path(filename).name or f"download_{len(self._queue) + 1}"
+            filename = self._unique_filename(requested)
+
             item = {
                 "url": url,
                 "filename": filename,
+                # Set only when the name had to change, so a caller polling the
+                # status can see that its model.safetensors is on disk under
+                # another name.
+                "requested_filename": (
+                    requested if requested != filename else None
+                ),
                 "status": "waiting",
                 "downloaded": 0,
                 "total": None,
@@ -182,6 +332,8 @@ class DownloadManager:
             message="File added to download queue",
             details={
                 "filename": filename,
+                "requested_filename": requested,
+                "renamed": requested != filename,
                 "queue_position": position,
                 "total_files": position,
                 "url": url,
@@ -339,11 +491,16 @@ class DownloadManager:
                         continue
 
                     total_files = len(self._queue)
-                    filename = item["filename"]
                     url = item["url"]
 
                     item["status"] = "downloading"
                     item["error"] = None
+
+                    # The name is re-checked here, not just at queue time:
+                    # something else may have claimed it since. A file already
+                    # at the destination is never taken as this download having
+                    # completed.
+                    filename, renamed = self._resolve_destination(index)
 
                     destination = self.download_directory / filename
 
@@ -362,6 +519,29 @@ class DownloadManager:
                         break
 
                     self._current_downloader = downloader
+                    # From here on this name is the session's output: the
+                    # destination was free, so the .part file and the finished
+                    # file are both ours and a cancellation may remove them.
+                    self._produced.add(filename)
+
+                if renamed:
+                    write_log(
+                        level="WARNING",
+                        component=COMPONENT,
+                        action="download_renamed",
+                        message=(
+                            f"Download {index + 1} renamed to avoid overwriting "
+                            f"an existing file"
+                        ),
+                        details={
+                            "file_index": index + 1,
+                            "requested_filename": item.get(
+                                "requested_filename"
+                            ),
+                            "filename": filename,
+                            "url": url,
+                        },
+                    )
 
                 write_log(
                     level="INFO",
@@ -397,20 +577,12 @@ class DownloadManager:
 
                     with self._lock:
                         cancelled = self._cancellation.cancelled
-                        fetched = bool(item.get("downloaded"))
 
                         # A cancellation can land in the moment between the
                         # last chunk and here. The cleanup is about to delete
                         # this file, so recording it as completed would leave
-                        # the queue naming something no longer on disk. A file
-                        # the session did not actually fetch keeps its
-                        # completed status: that is how the cleanup recognises
-                        # a pre-existing file it must not delete.
-                        item["status"] = (
-                            "cancelled"
-                            if cancelled and fetched
-                            else "completed"
-                        )
+                        # the queue naming something no longer on disk.
+                        item["status"] = "cancelled" if cancelled else "completed"
 
                     if cancelled:
                         break
@@ -458,6 +630,33 @@ class DownloadManager:
                             },
                         )
                         break
+
+                except DownloadConflict as error:
+                    # A file appeared at the destination between the name being
+                    # resolved and the transfer starting. The item fails rather
+                    # than silently reporting the other file as its own, and the
+                    # name is disowned so a cancellation cannot delete it.
+                    with self._lock:
+                        self._produced.discard(filename)
+                        item["status"] = "failed"
+                        item["error"] = str(error)
+
+                    write_log(
+                        level="ERROR",
+                        component=COMPONENT,
+                        action="download_conflict",
+                        message=(
+                            f"Download {index + 1} of {total_files} stopped: a "
+                            f"file already exists at the destination"
+                        ),
+                        details={
+                            "file_index": index + 1,
+                            "total_files": total_files,
+                            "filename": filename,
+                            "url": url,
+                            "error": str(error),
+                        },
+                    )
 
                 except DownloadError as error:
                     with self._lock:
@@ -997,10 +1196,12 @@ class DownloadManager:
         files of interrupted transfers and the files that had finished are
         removed: the queue was a single unit of work that did not complete,
         and half a set of model files is not a useful thing to leave on disk.
-        A file that was already there before the session started is never
-        touched — ``Downloader`` reports those as completed without downloading
-        them, so they are identified by having no partial file and no bytes
-        recorded.
+
+        Only names this session actually opened a transfer under are removed.
+        Those are recorded as the worker starts each file, so a file that was
+        already on disk is never a candidate: the download was renamed around it,
+        or refused with a conflict, and either way it is not this session's to
+        delete.
 
         The download directory itself is removed only when this manager created
         it and it is left empty.
@@ -1013,6 +1214,7 @@ class DownloadManager:
             # Copied so the deletions below run without holding the lock: a
             # status poll must not block on the filesystem.
             queue = [dict(item) for item in self._queue]
+            produced = set(self._produced)
             reason = self._cancellation.reason or "Cancelled by request"
 
         removed: list[str] = []
@@ -1021,19 +1223,15 @@ class DownloadManager:
 
         for item in queue:
             filename = item["filename"]
-            destination = self.download_directory / filename
-            partial = Path(str(destination) + ".part")
 
-            # Pre-existing file this session did not fetch: not ours to delete.
-            preexisting = (
-                item["status"] == "completed"
-                and not item.get("downloaded")
-                and not partial.exists()
-            )
-
-            if preexisting:
+            if filename not in produced:
+                # Never transferred under this name: either the queue never
+                # reached it, or a file was already there. Not ours to delete.
                 kept.append(filename)
                 continue
+
+            destination = self.download_directory / filename
+            partial = Path(str(destination) + ".part")
 
             for path in (partial, destination):
                 try:
@@ -1058,11 +1256,13 @@ class DownloadManager:
             # The bytes recorded against each item described files that no
             # longer exist, so they are cleared along with them.
             for item in self._queue:
-                if item["filename"] not in kept:
+                if item["filename"] in produced:
                     item["downloaded"] = 0
                     item["total"] = None
                     item["speed"] = 0.0
                 item.pop("_progress_state", None)
+
+            self._produced.clear()
 
         log_cancelled(
             component=COMPONENT,
@@ -1071,7 +1271,7 @@ class DownloadManager:
             details={
                 "download_directory": str(self.download_directory),
                 "files_removed": removed,
-                "preexisting_files_kept": kept,
+                "files_kept": kept,
                 "directory_removed": directory_removed,
                 "cleanup_errors": errors,
                 "reason": reason,
@@ -1092,6 +1292,7 @@ class DownloadManager:
 
         with self._lock:
             self._queue.clear()
+            self._produced.clear()
             self._current_downloader = None
             self._current_index = -1
             self._worker_thread = None

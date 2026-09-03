@@ -42,6 +42,9 @@ def create_environment(path: str) -> str:
         encoding="utf-8",
         errors="replace",
         check=False,
+        # This process may be an MCP server whose stdin carries the JSON-RPC
+        # stream, and a child inheriting it could read the protocol's bytes.
+        stdin=subprocess.DEVNULL,
     )
 
     if result.returncode != 0:

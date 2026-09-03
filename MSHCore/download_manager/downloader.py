@@ -6,14 +6,29 @@ from pathlib import Path
 import time
 from typing import Callable
 import urllib.error
-from urllib.parse import urlparse
 import urllib.request
 
-from .sources import ALLOWED_DOMAINS
+from .sources import verify_download_source
 
 
 class DownloadError(Exception):
     """Raised when a download cannot be completed."""
+
+
+class DownloadConflict(DownloadError):
+    """Raised when the destination file already exists.
+
+    A file already at the destination is never overwritten and never taken as
+    proof that this URL was downloaded: two repositories routinely publish the
+    same file name — ``model.safetensors`` is the usual one — so accepting the
+    existing file would report a download that never happened and leave the
+    wrong bytes under the requested name. The caller chooses a free name and
+    queues it again; ``DownloadManager`` does that automatically.
+
+    A subclass of :class:`DownloadError` so a caller that already handles a
+    failed download handles this too, and it is deliberately not retried: the
+    file will still be there on the next attempt.
+    """
 
 
 class DownloadCancelled(Exception):
@@ -75,16 +90,19 @@ class Downloader:
         self._skipped = False
 
     def _verify_download_source(self) -> None:
-        """Validate that the target URL belongs to an allowed domain.
+        """Validate that the target URL scheme and host are allowed.
+
+        Delegates to :func:`MSHCore.download_manager.sources.verify_download_source`
+        so this check and the manager's are the same comparison: the host comes
+        from ``urlparse(...).hostname`` — no port, no userinfo — the scheme must
+        be http or https, and Hugging Face's CDN subdomains are accepted.
 
         Raises:
-            PermissionError: If the domain is not in ALLOWED_DOMAINS.
+            DownloadSourceRejected: If the scheme or the domain is not allowed.
+                A ``PermissionError``, as before, whose message names the
+                rejected domain and lists the allowed ones.
         """
-        domain = urlparse(self.url).netloc.lower()
-        if domain not in ALLOWED_DOMAINS:
-            raise PermissionError(
-                f"Access denied: domain '{domain}' is not allowed."
-            )
+        verify_download_source(self.url)
 
     # ========================================================
     # Control
@@ -145,6 +163,9 @@ class Downloader:
 
         Raises:
             PermissionError: If the download URL domain is untrusted.
+            DownloadConflict: If a file is already at the destination. Nothing
+                is written and nothing is overwritten; the caller picks a free
+                name.
             DownloadCancelled: If the download is cancelled.
             DownloadSkipped: If the download is skipped.
             DownloadError: If all retry attempts fail.
@@ -156,17 +177,29 @@ class Downloader:
             exist_ok=True,
         )
 
-        # File already completely exists
+        # A file already at the destination is a conflict, not a completed
+        # download. Reporting "completed" here was silently standing in for a
+        # transfer that never ran, so a second repository's model.safetensors
+        # resolved to the first one's bytes.
         if self.destination.exists():
+            existing_size = self.destination.stat().st_size
+
             self._emit_status(
                 status_callback,
-                "completed",
+                "conflict",
                 {
-                    "reason": "file_already_exists",
-                    "size": self.destination.stat().st_size,
+                    "reason": "destination_exists",
+                    "destination": str(self.destination),
+                    "size": existing_size,
                 },
             )
-            return
+
+            raise DownloadConflict(
+                f"A file is already at the destination and was not "
+                f"overwritten: {self.destination} ({existing_size} bytes). "
+                f"Nothing was downloaded from {self.url}. Choose a different "
+                f"filename, or remove the existing file first."
+            )
 
         last_error: Exception | None = None
 
@@ -177,7 +210,7 @@ class Downloader:
                     status_callback=status_callback,
                 )
                 return
-            except (DownloadCancelled, DownloadSkipped):
+            except (DownloadCancelled, DownloadSkipped, DownloadConflict):
                 raise
             except Exception as error:
                 last_error = error

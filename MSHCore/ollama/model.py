@@ -28,6 +28,10 @@ def _run_command(command: list[str]) -> subprocess.CompletedProcess:
         encoding="utf-8",
         errors="replace",
         check=False,
+        # This process may be an MCP server whose stdin carries the JSON-RPC
+        # stream. `ollama run` in particular reads stdin for an interactive
+        # session, so a child inheriting it would consume the protocol's bytes.
+        stdin=subprocess.DEVNULL,
     )
 
 
