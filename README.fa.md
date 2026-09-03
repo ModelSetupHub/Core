@@ -109,7 +109,7 @@ print(result["summary"]["average_output_tokens_per_second"], "tokens/sec")
 from MSHCore.download_manager import DownloadManager
 from MSHCore.python import environment, tools
 
-manager = DownloadManager(download_directory="data/models")
+manager = DownloadManager()  # پیش‌فرض: %LOCALAPPDATA%\MSH\downloads
 manager.add("https://huggingface.co/Ultralytics/YOLOv8/resolve/main/yolov8n.pt")
 manager.start()
 manager.wait()

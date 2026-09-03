@@ -97,7 +97,7 @@ Or a Python-based model, with no Ollama involved at all — fetch the weights, p
 from MSHCore.download_manager import DownloadManager
 from MSHCore.python import environment, tools
 
-manager = DownloadManager(download_directory="data/models")
+manager = DownloadManager()  # defaults to %LOCALAPPDATA%\MSH\downloads
 manager.add("https://huggingface.co/Ultralytics/YOLOv8/resolve/main/yolov8n.pt")
 manager.start()
 manager.wait()

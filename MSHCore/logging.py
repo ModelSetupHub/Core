@@ -4,6 +4,8 @@ from datetime import datetime
 import json
 from pathlib import Path
 
+from MSHCore.paths import LOG_FILE_NAME, ensure_directory, logs_directory
+
 
 def _log_file_path() -> Path:
     """Return the execution log's path, creating its directory when missing.
@@ -12,30 +14,30 @@ def _log_file_path() -> Path:
     does not have to read the whole log: ``write_log`` runs on every logged
     event and needs nothing but the path.
 
+    The directory is ``%LOCALAPPDATA%\\MSH\\logs``, created with its parents on
+    first use. It is under the user's own profile rather than a machine-wide
+    location, so writing the log never depends on the process being elevated.
+
     Returns:
         Path: Absolute path to the execution log file.
     """
-    # logging.py lives in MSHCore/, so the repository root is one level up
-    repo_root = Path(__file__).resolve().parent.parent
-    data_dir = repo_root / "data"
-    data_dir.mkdir(exist_ok=True)
-
-    return data_dir / "executions.log"
+    return ensure_directory(logs_directory()) / LOG_FILE_NAME
 
 
 def get_log_file_info() -> dict:
     """Describe the execution log file: where it is and how much it holds.
 
-    The log file is stored inside the repository's data directory:
-        Core/
-        ├── MSHCore/
-        │   └── logging.py
-        └── data/
+    The log file is stored under the application data directory::
+
+        %LOCALAPPDATA%\\MSH\\
+        ├── downloads/
+        └── logs/
             └── executions.log
 
-    Creates the data directory if it does not already exist. A log that has
-    never been written to is reported at zero lines and zero bytes rather than
-    treated as an error, so this can be called before the first event.
+    Creates the logs directory, and its parents, if they do not already exist.
+    A log that has never been written to is reported at zero lines and zero
+    bytes rather than treated as an error, so this can be called before the
+    first event.
 
     Returns:
         dict: Mapping with 'path' as the absolute ``Path`` to the log file,
@@ -43,7 +45,8 @@ def get_log_file_info() -> dict:
         'size_bytes' its size on disk.
 
     Raises:
-        OSError: If the log file exists but cannot be read.
+        OSError: If the log directory cannot be created, or the log file exists
+            but cannot be read.
     """
     log_file = _log_file_path()
 
@@ -74,7 +77,14 @@ def write_log(
     """Append a new execution event to the log file.
 
     Each log entry is stored as a single line separated by pipe delimiters
-    with structured details encoded in JSON format.
+    with structured details encoded in JSON format. The log directory and its
+    parents are created on demand.
+
+    Logging is best-effort: an entry that cannot be written — a full disk, a
+    locked file, a profile directory that cannot be created — is dropped rather
+    than raised, because failing the operation being logged would be the larger
+    loss. Every MSHCore operation logs, so this function is never the reason one
+    of them fails.
 
     Args:
         level: Log severity (e.g., 'INFO', 'WARNING', 'ERROR').
@@ -98,10 +108,14 @@ def write_log(
         f"{json.dumps(details, ensure_ascii=False)}\n"
     )
 
-    log_file = _log_file_path()
+    try:
+        log_file = _log_file_path()
 
-    with open(log_file, "a", encoding="utf-8") as file:
-        file.write(entry)
+        with open(log_file, "a", encoding="utf-8") as file:
+            file.write(entry)
+    except OSError:
+        # Includes a PermissionError on the log directory or the file itself.
+        return
 
 
 def _parse_log_line(line: str) -> dict | None:
@@ -176,7 +190,12 @@ def read_logs(
     if line_count is not None and line_count < 1:
         raise ValueError(f"line_count must be 1 or greater, got {line_count}")
 
-    log_file = _log_file_path()
+    try:
+        log_file = _log_file_path()
+    except OSError:
+        # The log directory could not be created, so nothing has been written
+        # there — the same situation as a log that does not exist yet.
+        return []
 
     if not log_file.exists():
         return []

@@ -11,6 +11,7 @@ from typing import Iterable
 
 from MSHCore.cancellation import CancellationToken, log_cancelled
 from MSHCore.logging import write_log
+from MSHCore.paths import DOWNLOADS_DIRECTORY, ensure_directory
 from .downloader import (
     DownloadCancelled,
     DownloadConflict,
@@ -68,24 +69,30 @@ class DownloadManager:
 
     def __init__(
         self,
-        download_directory: str | Path = "data/downloads",
+        download_directory: str | Path = DOWNLOADS_DIRECTORY,
         max_retries: int = 3,
     ) -> None:
         """Initialize the DownloadManager.
+
+        The directory is created along with its parents on first use. It
+        defaults to ``%LOCALAPPDATA%\\MSH\\downloads``, which is writable
+        without elevation.
 
         Args:
             download_directory: Target folder path for downloaded files.
             max_retries: Maximum download retry attempts per file. Defaults
                 to 3.
+
+        Raises:
+            PermissionError: If the process may not create the directory, which
+                only arises for a caller-supplied location.
+            OSError: If the directory could not be created for another reason.
         """
         self.download_directory = Path(download_directory)
         # Whether this manager created the directory, so a cancellation knows
         # if removing it again is its business.
         self._created_directory = not self.download_directory.exists()
-        self.download_directory.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
+        ensure_directory(self.download_directory)
 
         self.max_retries = max_retries
         self._queue: list[dict] = []
