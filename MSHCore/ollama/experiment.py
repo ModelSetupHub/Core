@@ -655,6 +655,7 @@ def compare_tests(
     result = {
         "model": model,
         "tests": tests,
+        "significance": _assess_significance(tests),
     }
 
     write_log(
@@ -670,15 +671,133 @@ def compare_tests(
     return result
 
 
+# How many combined standard deviations two configurations' averages must be
+# apart before their difference counts as real. Two overlapping spreads are
+# noise; one clear gap between them is a finding. Deliberately conservative —
+# claiming a difference that does not exist sends a user tuning a parameter
+# that never mattered.
+SIGNIFICANCE_THRESHOLD = 2.0
+
+
+def _assess_significance(tests: list[dict]) -> dict | None:
+    """Compare the leading configurations' averages against their own noise.
+
+    A comparison is only worth ranking when the top two are actually apart:
+    two averages separated by less than their combined standard deviations
+    describe the same speed, and naming a winner between them would be
+    inventing a fact. The metric judged here is output generation rate, the
+    figure the verdict turns on.
+
+    With a single repetition there is no spread to argue from — the comparison
+    then reports itself as unmeasured rather than pretending to a verdict. A
+    configuration whose prompts all failed has no average and takes itself out
+    of the running; the ranking stands among the configurations that have one.
+
+    Args:
+        tests: One run_test result per configuration, in run order.
+
+    Returns:
+        dict | None: The assessment, or None when fewer than two
+        configurations produced a measurable average.
+    """
+    ranked = []
+
+    for test in tests:
+        rate = test["summary"].get("average_output_tokens_per_second")
+
+        if rate is not None:
+            ranked.append((
+                test["name"],
+                rate,
+                test["summary"].get("output_tokens_per_second_stddev"),
+            ))
+
+    if len(ranked) < 2:
+        return None
+
+    ranked.sort(key=lambda item: item[1], reverse=True)
+
+    leader_name, leader_rate, leader_spread = ranked[0]
+    runner_name, runner_rate, runner_spread = ranked[1]
+
+    spreads = [
+        spread
+        for spread in (leader_spread, runner_spread)
+        if spread is not None
+    ]
+
+    gap = leader_rate - runner_rate
+
+    if not spreads:
+        # No repetition data anywhere: a difference is visible but nothing
+        # measures whether it is real.
+        return {
+            "metric": "output_tokens_per_second",
+            "leader": leader_name,
+            "runner_up": runner_name,
+            "difference": gap,
+            "significant": None,
+            "message": (
+                "Measured once per prompt, so noise cannot be told apart "
+                "from a real difference. Run again with repetitions set "
+                "higher to learn whether this gap is real."
+            ),
+        }
+
+    combined_spread = (sum(spread ** 2 for spread in spreads) / len(spreads)) ** 0.5
+
+    # A zero spread on both sides makes the ratio infinite, which is correct:
+    # two perfectly repeatable measurements a hair apart really do differ.
+    ratio = gap / combined_spread if combined_spread > 0 else None
+
+    if ratio is None:
+        significant = True
+        description = (
+            f"{leader_name} is faster by {gap:.3g} tokens/s, and both "
+            f"measurements repeated exactly — the difference is real."
+        )
+    elif ratio >= SIGNIFICANCE_THRESHOLD:
+        significant = True
+        description = (
+            f"{leader_name} is faster by {gap:.3g} tokens/s "
+            f"({ratio:.1f}x the noise level) — the difference is real."
+        )
+    else:
+        significant = False
+        description = (
+            f"{leader_name} and {runner_name} are within noise of each other "
+            f"(gap {gap:.3g} tokens/s is {ratio:.1f}x the noise level). "
+            f"Either configuration is fine; pick on other grounds."
+        )
+
+    return {
+        "metric": "output_tokens_per_second",
+        "leader": leader_name,
+        "runner_up": runner_name,
+        "difference": gap,
+        "noise_level": combined_spread,
+        "difference_to_noise_ratio": ratio,
+        "significant": significant,
+        "message": description,
+    }
+
+
 def _build_summary(results: list[dict]) -> dict:
     """Build aggregate metrics from successful test results.
+
+    The output-rate noise level combines every prompt's own run-to-run spread
+    into one pooled figure. It exists for the comparison verdict: how far two
+    configurations' averages sit apart only means something against the noise
+    both of them carry. A single-repetition test has no spread to pool and
+    reports None, so a caller never mistakes "measured once" for "perfectly
+    repeatable".
 
     Args:
         results: List of successful test result dictionaries.
 
     Returns:
         dict: Summary statistics including average durations, rates, and token
-            counts.
+            counts, plus the output-rate noise level when repetitions were run.
     """
     if not results:
         return {
@@ -686,6 +805,7 @@ def _build_summary(results: list[dict]) -> dict:
             "average_prompt_tokens_per_second": None,
             "average_output_tokens_per_second": None,
             "total_output_tokens": 0,
+            "output_tokens_per_second_stddev": None,
         }
 
     average_duration = (
@@ -708,6 +828,22 @@ def _build_summary(results: list[dict]) -> dict:
         result["output_tokens"] for result in results
     )
 
+    # Only prompts that actually repeated carry a spread; averaging their
+    # variances is the pooled estimate of the run-to-run noise the whole test
+    # was subject to. Prompts measured once contribute nothing and say nothing.
+    spreads = [
+        result["output_tokens_per_second_stddev"]
+        for result in results
+        if result.get("repetitions", 1) > 1
+        and result.get("output_tokens_per_second_stddev") is not None
+    ]
+
+    output_noise = (
+        (sum(spread ** 2 for spread in spreads) / len(spreads)) ** 0.5
+        if spreads
+        else None
+    )
+
     return {
         "average_duration_seconds": average_duration,
         "average_prompt_tokens_per_second": (
@@ -721,6 +857,7 @@ def _build_summary(results: list[dict]) -> dict:
             else None
         ),
         "total_output_tokens": total_output_tokens,
+        "output_tokens_per_second_stddev": output_noise,
     }
 
 
