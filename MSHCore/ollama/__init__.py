@@ -1,1 +1,1 @@
-"""Ollama process runtime, model management, and benchmarking package."""
+"""Ollama process runtime and model management package."""

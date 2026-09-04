@@ -6,7 +6,7 @@ way, through a token passed into the operation:
 
     token = CancellationToken()
     ...
-    experiment.run_test(model="llama3", prompts=[...], cancellation=token)
+    ollama_runner.run_test(model="llama3", prompts=[...], cancellation=token)
 
     # from another thread
     token.cancel()
