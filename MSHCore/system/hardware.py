@@ -426,6 +426,55 @@ def get_vram_used() -> list[int]:
     return readings
 
 
+def get_gpu_thermal() -> list[dict]:
+    """Sample each NVIDIA GPU's temperature and current SM clock.
+
+    One `nvidia-smi` call, one snapshot. The clock is the one the driver
+    reports at that moment — after a GPU has throttled, the falling figure is
+    the trace it leaves, which is what makes the reading worth pairing with
+    the temperature that caused it.
+
+    Returns:
+        list[dict]: One entry per GPU carrying 'temperature_c' and
+        'sm_clock_mhz', either None when that figure was not reported.
+        Empty when nvidia-smi is missing, fails, or reports nothing — the
+        same 'no NVIDIA layer here' answer every other GPU probe gives.
+    """
+    output = run_command([
+        "nvidia-smi",
+        "--query-gpu=temperature.gpu,clocks.current.sm",
+        "--format=csv,noheader,nounits",
+    ])
+
+    if not output:
+        return []
+
+    def _number(value: str) -> int | None:
+        try:
+            return int(float(value))
+        except ValueError:
+            return None
+
+    readings = []
+
+    for line in output.splitlines():
+        parts = [item.strip() for item in line.split(",")]
+
+        if len(parts) < 2:
+            continue
+
+        temperature = _number(parts[0])
+        clock = _number(parts[1])
+
+        if temperature is not None or clock is not None:
+            readings.append({
+                "temperature_c": temperature,
+                "sm_clock_mhz": clock,
+            })
+
+    return readings
+
+
 # ============================================================
 # Storage
 # ============================================================

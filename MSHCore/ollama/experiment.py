@@ -14,7 +14,7 @@ from MSHCore.cancellation import (
 )
 from MSHCore.logging import write_log
 from MSHCore.ollama import model as model_api
-from MSHCore.system.hardware import get_vram_used
+from MSHCore.system.hardware import get_gpu_thermal, get_vram_used
 
 COMPONENT = "ollama/experiment"
 OLLAMA_GENERATE_URL = "http://127.0.0.1:11434/api/generate"
@@ -22,7 +22,7 @@ OLLAMA_GENERATE_URL = "http://127.0.0.1:11434/api/generate"
 # Per-run metrics averaged across a prompt's repetitions, and the subset whose
 # spread (standard deviation, minimum, maximum) is reported alongside them.
 # Every entry is optional on a run: ttft_seconds is absent when a generation
-# produced no content, vram_used_mb when the machine has no NVIDIA GPU.
+# produced no content, and the GPU figures when the machine has no NVIDIA GPU.
 NUMERIC_METRICS = (
     "duration_seconds",
     "prompt_tokens",
@@ -31,6 +31,8 @@ NUMERIC_METRICS = (
     "output_tokens_per_second",
     "ttft_seconds",
     "vram_used_mb",
+    "gpu_temperature_c",
+    "gpu_clock_mhz",
 )
 
 SPREAD_METRICS = (
@@ -38,6 +40,7 @@ SPREAD_METRICS = (
     "prompt_tokens_per_second",
     "output_tokens_per_second",
     "ttft_seconds",
+    "gpu_temperature_c",
 )
 
 
@@ -243,11 +246,12 @@ def run_test(
     the means. The default of one repetition reproduces exactly the behaviour
     this function had before averaging existed.
 
-    Alongside the timing metrics, two measurements are reported as taken: the
-    time to the answer's first streamed token, and the VRAM the driver
-    reported right after the generation finished. Neither is judged here —
-    the numbers are offered to the caller, whose decision it is what they
-    mean for the machine being benchmarked.
+    Alongside the timing metrics, measurements are reported as taken: the time
+    to the answer's first streamed token, the VRAM the driver reported right
+    after the generation finished, and the hottest GPU's temperature and clock
+    in that same moment. None is judged here — the numbers are offered to the
+    caller, whose decision it is what they mean for the machine being
+    benchmarked.
 
     The model is checked and preloaded before each prompt.
     Model loading is not included in test timing or performance results.
@@ -377,14 +381,39 @@ def run_test(
                         "done": response.get("done", True),
                     }
 
-                    # One snapshot right after the generation: the number
-                    # describes the GPU as the driver saw it at that moment,
-                    # model and everything else on the machine included. It is
-                    # reported as measured — judging it is the caller's part.
+                    # One snapshot right after the generation: the numbers
+                    # describe the GPU as the driver saw it at that moment,
+                    # model and everything else on the machine included. They
+                    # are reported as measured — judging them is the caller's
+                    # part.
                     vram_readings = get_vram_used()
 
                     if vram_readings:
                         run_result["vram_used_mb"] = max(vram_readings)
+
+                    thermal_readings = get_gpu_thermal()
+
+                    if thermal_readings:
+                        # The hottest GPU is the one whose throttle, if any,
+                        # shaped this run's tail; its figures are the ones
+                        # worth carrying.
+                        hottest = max(
+                            thermal_readings,
+                            key=lambda reading: (
+                                reading.get("temperature_c") is not None,
+                                reading.get("temperature_c") or 0,
+                            ),
+                        )
+
+                        if hottest.get("temperature_c") is not None:
+                            run_result["gpu_temperature_c"] = hottest[
+                                "temperature_c"
+                            ]
+
+                        if hottest.get("sm_clock_mhz") is not None:
+                            run_result["gpu_clock_mhz"] = hottest[
+                                "sm_clock_mhz"
+                            ]
 
                     if include_output:
                         run_result["response"] = response.get("response", "")
@@ -412,6 +441,10 @@ def run_test(
                             ),
                             "ttft_seconds": run_result["ttft_seconds"],
                             "vram_used_mb": run_result.get("vram_used_mb"),
+                            "gpu_temperature_c": run_result.get(
+                                "gpu_temperature_c"
+                            ),
+                            "gpu_clock_mhz": run_result.get("gpu_clock_mhz"),
                             "done": run_result["done"],
                         },
                     )
