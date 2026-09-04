@@ -393,6 +393,39 @@ def get_cuda_version() -> str | None:
     return None
 
 
+def get_vram_used() -> list[int]:
+    """Sample the currently used VRAM of every NVIDIA GPU, in megabytes.
+
+    One `nvidia-smi --query-gpu=memory.used` call, one snapshot. The number is
+    what the driver reports for the whole GPU — every process on the machine
+    is in it — so a caller that wants a model's own footprint samples while
+    that model alone is the thing that changed.
+
+    Returns:
+        list[int]: Megabytes in use, one entry per GPU in nvidia-smi's order.
+        Empty when nvidia-smi is missing, fails, or reports nothing — the same
+        'no NVIDIA layer here' answer every other GPU probe gives.
+    """
+    output = run_command([
+        "nvidia-smi",
+        "--query-gpu=memory.used",
+        "--format=csv,noheader,nounits",
+    ])
+
+    if not output:
+        return []
+
+    readings = []
+
+    for line in output.splitlines():
+        try:
+            readings.append(int(float(line.strip())))
+        except ValueError:
+            continue
+
+    return readings
+
+
 # ============================================================
 # Storage
 # ============================================================

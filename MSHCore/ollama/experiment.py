@@ -14,24 +14,30 @@ from MSHCore.cancellation import (
 )
 from MSHCore.logging import write_log
 from MSHCore.ollama import model as model_api
+from MSHCore.system.hardware import get_vram_used
 
 COMPONENT = "ollama/experiment"
 OLLAMA_GENERATE_URL = "http://127.0.0.1:11434/api/generate"
 
 # Per-run metrics averaged across a prompt's repetitions, and the subset whose
 # spread (standard deviation, minimum, maximum) is reported alongside them.
+# Every entry is optional on a run: ttft_seconds is absent when a generation
+# produced no content, vram_used_mb when the machine has no NVIDIA GPU.
 NUMERIC_METRICS = (
     "duration_seconds",
     "prompt_tokens",
     "output_tokens",
     "prompt_tokens_per_second",
     "output_tokens_per_second",
+    "ttft_seconds",
+    "vram_used_mb",
 )
 
 SPREAD_METRICS = (
     "duration_seconds",
     "prompt_tokens_per_second",
     "output_tokens_per_second",
+    "ttft_seconds",
 )
 
 
@@ -59,7 +65,8 @@ def _generate(
 
     Returns:
         dict: Response fields parsed from the Ollama generate API, with the
-            generated text collected under 'response'.
+            generated text collected under 'response' and the time-to-first-
+            token under 'ttft_seconds' (None when nothing was generated).
 
     Raises:
         RuntimeError: If connection fails or Ollama returns an error payload.
@@ -93,6 +100,11 @@ def _generate(
         method="POST",
     )
 
+    # The time-to-first-token clock starts when the request is sent: the delay
+    # a caller experiences covers the connection, the prompt's processing and
+    # the first token's generation alike.
+    request_started = time.perf_counter()
+
     try:
         response = urllib.request.urlopen(request, timeout=300)
     except (urllib.error.URLError, TimeoutError, OSError) as error:
@@ -108,6 +120,7 @@ def _generate(
 
     chunks: list[str] = []
     final: dict = {}
+    ttft: float | None = None
 
     try:
         for line in response:
@@ -127,6 +140,11 @@ def _generate(
 
             text = event.get("response")
             if text:
+                if ttft is None:
+                    # First content of the answer: this is the latency a
+                    # reader of a streamed response actually perceives.
+                    ttft = time.perf_counter() - request_started
+
                 chunks.append(text)
 
             if event.get("done"):
@@ -157,6 +175,8 @@ def _generate(
         raise RuntimeError("Ollama closed the stream before finishing")
 
     final["response"] = "".join(chunks)
+    # A generation that produced no content has no first token to time.
+    final["ttft_seconds"] = ttft
 
     return final
 
@@ -222,6 +242,12 @@ def run_test(
     those runs, with the spread of the timing and rate metrics reported along
     the means. The default of one repetition reproduces exactly the behaviour
     this function had before averaging existed.
+
+    Alongside the timing metrics, two measurements are reported as taken: the
+    time to the answer's first streamed token, and the VRAM the driver
+    reported right after the generation finished. Neither is judged here —
+    the numbers are offered to the caller, whose decision it is what they
+    mean for the machine being benchmarked.
 
     The model is checked and preloaded before each prompt.
     Model loading is not included in test timing or performance results.
@@ -347,8 +373,18 @@ def run_test(
                         "output_tokens": output_tokens,
                         "prompt_tokens_per_second": prompt_tokens_per_second,
                         "output_tokens_per_second": output_tokens_per_second,
+                        "ttft_seconds": response.get("ttft_seconds"),
                         "done": response.get("done", True),
                     }
+
+                    # One snapshot right after the generation: the number
+                    # describes the GPU as the driver saw it at that moment,
+                    # model and everything else on the machine included. It is
+                    # reported as measured — judging it is the caller's part.
+                    vram_readings = get_vram_used()
+
+                    if vram_readings:
+                        run_result["vram_used_mb"] = max(vram_readings)
 
                     if include_output:
                         run_result["response"] = response.get("response", "")
@@ -374,6 +410,8 @@ def run_test(
                             "output_tokens_per_second": (
                                 run_result["output_tokens_per_second"]
                             ),
+                            "ttft_seconds": run_result["ttft_seconds"],
+                            "vram_used_mb": run_result.get("vram_used_mb"),
                             "done": run_result["done"],
                         },
                     )
