@@ -190,30 +190,49 @@ def save(result: dict) -> str:
     """Store a comparison result as one history entry.
 
     The result is kept exactly as given — tests, per-prompt rows, noise
-    spreads, significance — under a header naming what was compared. Two runs
-    saved in the same second are told apart by a short random suffix, so an
-    identifier is never reused and overwriting an older run by accident is
-    not something that can happen.
+    spreads, significance — under a header naming what was compared. A
+    single-model comparison carries its model under 'model'; a cross-model
+    one names what it measured under 'models', and both are accepted. Two
+    runs saved in the same second are told apart by a short random suffix,
+    so an identifier is never reused and overwriting an older run by
+    accident is not something that can happen.
 
     Args:
-        result: A compare_tests result dictionary, carrying 'model', 'tests'
-            and optionally 'significance' and 'configuration'.
+        result: A compare_tests or compare_models result dictionary, carrying
+            'tests' plus either 'model' or a 'models' list, and optionally
+            'significance'.
 
     Returns:
         str: The identifier the run was saved under.
 
     Raises:
-        TypeError: If result is not a dictionary or its model is not a string.
-        ValueError: If the result names no model or holds no test results.
+        TypeError: If result is not a dictionary.
+        ValueError: If the result names no model (or models) or holds no test
+            results.
         OSError: If the run cannot be written to disk.
     """
     if not isinstance(result, dict):
         raise TypeError("result must be a dictionary")
 
     model = result.get("model")
+    models = result.get("models")
 
-    if not isinstance(model, str) or not model.strip():
-        raise ValueError("result must carry the benchmarked model's name")
+    if models is None and isinstance(model, str) and model.strip():
+        models = [model]
+
+    if (
+        not isinstance(models, list)
+        or not models
+        or not all(
+            isinstance(name, str) and name.strip() for name in models
+        )
+    ):
+        raise ValueError(
+            "result must carry what it benchmarked: a 'model' name or a "
+            "non-empty 'models' list"
+        )
+
+    model = model if isinstance(model, str) and model.strip() else None
 
     tests = result.get("tests")
 
@@ -231,6 +250,7 @@ def save(result: dict) -> str:
         "id": benchmark_id,
         "saved_at": saved_at,
         "model": model,
+        "models": models,
         "prompts": [
             prompt.get("prompt")
             for prompt in tests[0].get("results", [])
@@ -257,6 +277,7 @@ def save(result: dict) -> str:
             "id": benchmark_id,
             "saved_at": saved_at,
             "model": model,
+            "models": models,
             "repetitions": record["repetitions"],
             "configuration_count": len(record["configurations"]),
             "prompt_count": len(record["prompts"]),
@@ -297,6 +318,7 @@ def save(result: dict) -> str:
         details={
             "id": benchmark_id,
             "model": model,
+            "models": models,
             "configuration_count": len(record["configurations"]),
             "prompt_count": len(record["prompts"]),
         },
