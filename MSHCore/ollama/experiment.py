@@ -709,6 +709,192 @@ def compare_tests(
     return result
 
 
+def _unload_model(model: str) -> bool:
+    """Unload one model, treating a failure as a note rather than a stop.
+
+    Args:
+        model: Model name to unload.
+
+    Returns:
+        bool: True when the model was unloaded, False when Ollama refused or
+        the model was not there to stop. Either way the caller carries on:
+        the next model's load proceeds regardless, and its timings describe
+        the machine as it actually was.
+    """
+    try:
+        model_api.stop_model(model)
+        return True
+    except Exception as error:
+        write_log(
+            level="WARNING",
+            component=COMPONENT,
+            action="unload",
+            message="Model unload failed between comparison steps",
+            details={
+                "model": model,
+                "error": str(error),
+            },
+        )
+        return False
+
+
+def compare_models(
+    models: list[str],
+    prompts: list[str],
+    config: dict | None = None,
+    include_output: bool = False,
+    cancellation: CancellationToken | None = None,
+    repetitions: int = 1,
+) -> dict:
+    """Run the same prompts and one shared configuration against several models.
+
+    Models are benchmarked one after another, and the model measured before is
+    unloaded before the next one loads: two models resident at once would
+    compete for the same VRAM and make every timing in both meaningless. A
+    model that was already loaded before the comparison began is not the
+    comparison's to stop — only the models this call loaded are unloaded, the
+    one just measured before the next loads and the last one when the run is
+    over, so the machine is left as it was found.
+
+    One configuration applies to every model, because a fair comparison
+    changes one thing at a time; several configurations per model means one
+    :func:`compare_tests` call per configuration instead.
+
+    Args:
+        models: Model names or tags to benchmark, in run order.
+        prompts: Prompt strings every model answers.
+        config: Optional generation parameters shared by every model.
+        include_output: Whether to keep generated text in results. Defaults
+            to False.
+        cancellation: Optional token that stops the comparison part-way.
+        repetitions: How many times every prompt runs per model, from 1.
+
+    Returns:
+        dict: Aggregated comparison across models. 'tests' holds one run_test
+        result per model — its timings, noise spread and VRAM readings — with
+        the model's name as the test name, and 'significance' judges the gap
+        between the two fastest models against their own noise, exactly as
+        :func:`compare_tests` judges configurations.
+
+    Raises:
+        ValueError: If models or prompts are empty, a model name is not a
+            non-empty string, or repetitions is not 1 or greater.
+        TypeError: If config is not a dictionary or repetitions is not an
+            integer.
+        OperationCancelled: If the token is cancelled. Results collected so
+            far are discarded — a cancelled comparison leaves nothing behind
+            but its log entry, and no model in memory.
+    """
+    if not isinstance(models, list) or not models:
+        raise ValueError("At least one model is required")
+
+    for position, model_name in enumerate(models, start=1):
+        if not isinstance(model_name, str) or not model_name.strip():
+            raise ValueError(f"Model {position} must be a non-empty string")
+
+    if not prompts:
+        raise ValueError("At least one prompt is required")
+
+    if config is not None and not isinstance(config, dict):
+        raise TypeError("config must be a dictionary or None")
+
+    if not isinstance(include_output, bool):
+        raise TypeError("include_output must be a boolean")
+
+    if not isinstance(repetitions, int) or isinstance(repetitions, bool):
+        raise TypeError("repetitions must be an integer")
+
+    if repetitions < 1:
+        raise ValueError(f"repetitions must be 1 or greater, got {repetitions}")
+
+    token = cancellation if cancellation is not None else CancellationToken()
+
+    configuration = dict(config or {})
+
+    write_log(
+        level="INFO",
+        component=COMPONENT,
+        action="compare_models",
+        message="Model comparison started",
+        details={
+            "models": models,
+            "prompts": prompts,
+            "config": configuration,
+            "repetitions": repetitions,
+        },
+    )
+
+    tests = []
+    loaded: str | None = None
+
+    try:
+        for model_name in models:
+            token.raise_if_cancelled()
+
+            if loaded is not None:
+                _unload_model(loaded)
+
+            try:
+                result = run_test(
+                    model=model_name,
+                    prompts=prompts,
+                    config=configuration,
+                    name=model_name,
+                    include_output=include_output,
+                    cancellation=token,
+                    repetitions=repetitions,
+                )
+            except OperationCancelled as error:
+                # run_test has already unloaded the model it had loaded; the
+                # one before it was unloaded on the way out. Discard the
+                # finished models so no partial comparison survives, and
+                # record what the comparison as a whole lost.
+                log_cancelled(
+                    component=COMPONENT,
+                    action="compare_models",
+                    message="Model comparison cancelled",
+                    details={
+                        "models": models,
+                        "models_completed": len(tests),
+                        "models_total": len(models),
+                        "partial_results_discarded": len(tests),
+                        "reason": str(error),
+                    },
+                )
+                tests.clear()
+                raise
+
+            tests.append(result)
+            loaded = model_name
+
+    finally:
+        # run_test unloads its own model when a cancellation ends it; on every
+        # other exit the last model measured is unloaded here, so the
+        # comparison leaves no model in memory whatever its outcome.
+        if loaded is not None:
+            _unload_model(loaded)
+
+    result = {
+        "models": models,
+        "config": configuration,
+        "repetitions": repetitions,
+        "tests": tests,
+        "significance": _assess_significance(tests),
+    }
+
+    write_log(
+        level="INFO",
+        component=COMPONENT,
+        action="compare_models",
+        message="Model comparison completed",
+        details={
+            "models": models,
+        },
+    )
+
+    return result
+
+
 # How many combined standard deviations two configurations' averages must be
 # apart before their difference counts as real. Two overlapping spreads are
 # noise; one clear gap between them is a finding. Deliberately conservative —
