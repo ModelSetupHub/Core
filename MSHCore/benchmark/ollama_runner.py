@@ -16,7 +16,7 @@ from MSHCore.logging import write_log
 from MSHCore.ollama import model as model_api
 from MSHCore.system.hardware import get_gpu_thermal, get_vram_used
 
-COMPONENT = "ollama/experiment"
+COMPONENT = "benchmark/ollama_runner"
 OLLAMA_GENERATE_URL = "http://127.0.0.1:11434/api/generate"
 
 # Per-run metrics averaged across a prompt's repetitions, and the subset whose

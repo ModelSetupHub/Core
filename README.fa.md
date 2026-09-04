@@ -86,12 +86,12 @@ pip install .
 
 ```python
 from MSHCore.system.scanner import scan_system
-from MSHCore.ollama import experiment
+from MSHCore.benchmark import ollama_runner
 
 profile = scan_system()
 print(profile["cpu"]["model"], profile["memory"]["total_gb"], "GB")
 
-result = experiment.run_test(
+result = ollama_runner.run_test(
     model="llama3",
     prompts=["Summarize the solar system."],
     config={"temperature": 0.7, "num_ctx": 4096},

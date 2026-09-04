@@ -6,6 +6,10 @@ together — a configuration's numbers only mean something against the others
 it was compared with — so a run is stored whole in a single file rather than
 split per configuration or per model.
 
+The store is runner-agnostic: it validates only the shape of what arrives —
+what was benchmarked, and at least one test — and never talks to a model
+runtime, so a runner for any model server saves here unchanged.
+
 Layout under the toolkit's data root (see :mod:`MSHCore.paths`)::
 
     %LOCALAPPDATA%\\MSH\\
