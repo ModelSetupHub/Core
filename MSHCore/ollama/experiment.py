@@ -18,6 +18,22 @@ from MSHCore.ollama import model as model_api
 COMPONENT = "ollama/experiment"
 OLLAMA_GENERATE_URL = "http://127.0.0.1:11434/api/generate"
 
+# Per-run metrics averaged across a prompt's repetitions, and the subset whose
+# spread (standard deviation, minimum, maximum) is reported alongside them.
+NUMERIC_METRICS = (
+    "duration_seconds",
+    "prompt_tokens",
+    "output_tokens",
+    "prompt_tokens_per_second",
+    "output_tokens_per_second",
+)
+
+SPREAD_METRICS = (
+    "duration_seconds",
+    "prompt_tokens_per_second",
+    "output_tokens_per_second",
+)
+
 
 def _generate(
     model: str,
@@ -198,8 +214,14 @@ def run_test(
     name: str = "test",
     include_output: bool = False,
     cancellation: CancellationToken | None = None,
+    repetitions: int = 1,
 ) -> dict:
     """Run one temporary model configuration against multiple prompts.
+
+    Each prompt runs ``repetitions`` times and the per-prompt result averages
+    those runs, with the spread of the timing and rate metrics reported along
+    the means. The default of one repetition reproduces exactly the behaviour
+    this function had before averaging existed.
 
     The model is checked and preloaded before each prompt.
     Model loading is not included in test timing or performance results.
@@ -213,12 +235,16 @@ def run_test(
             Defaults to False.
         cancellation: Optional token that stops the run between or during
             prompts.
+        repetitions: How many times every prompt is executed, from 1. The
+            first repetition doubles as the warmup the following ones benefit
+            from; results average them all.
 
     Returns:
         dict: Test execution results and summary statistics.
 
     Raises:
-        ValueError: If model name is empty or prompts list is empty.
+        ValueError: If model name is empty, prompts list is empty, or
+            repetitions is not 1 or greater.
         TypeError: If include_output is not boolean or any prompt is not a
             string.
         OperationCancelled: If the token is cancelled. Partial results are
@@ -233,6 +259,12 @@ def run_test(
 
     if not isinstance(include_output, bool):
         raise TypeError("include_output must be a boolean")
+
+    if not isinstance(repetitions, int) or isinstance(repetitions, bool):
+        raise TypeError("repetitions must be an integer")
+
+    if repetitions < 1:
+        raise ValueError(f"repetitions must be 1 or greater, got {repetitions}")
 
     # One token for the whole run, so the prompt loop, `_generate` and the
     # watcher thread all consult the same flag whether or not a caller supplied
@@ -260,116 +292,157 @@ def run_test(
 
             token.raise_if_cancelled()
 
-            # Reset per prompt: a failure before the timer starts must not
-            # report the previous prompt's start time.
-            started_at: float | None = None
+            # Successful repetitions only: a failed run contributes its error
+            # but no timing, so averaging never mixes numbers with failures.
+            successful: list[dict] = []
+            errors: list[str] = []
 
-            try:
-                # Ensure the model is loaded before the test.
-                # This operation is intentionally outside the
-                # benchmark timer and is not included in results.
-                model_api.load_model(model)
+            for repetition in range(1, repetitions + 1):
+                token.raise_if_cancelled()
 
-                started_at = time.perf_counter()
+                # Reset per run: a failure before the timer starts must not
+                # report the previous run's start time.
+                started_at: float | None = None
 
-                response = _generate(
-                    model=model,
-                    prompt=prompt,
-                    options=configuration,
-                    cancellation=token,
-                )
+                try:
+                    # Ensure the model is loaded before the test.
+                    # This operation is intentionally outside the
+                    # benchmark timer and is not included in results.
+                    # The check is cheap once the model is already loaded, so
+                    # it runs before every repetition.
+                    model_api.load_model(model)
 
-                duration = time.perf_counter() - started_at
+                    started_at = time.perf_counter()
 
-                prompt_tokens = response.get("prompt_eval_count", 0)
-                output_tokens = response.get("eval_count", 0)
-                prompt_duration_ns = response.get("prompt_eval_duration", 0)
-                output_duration_ns = response.get("eval_duration", 0)
+                    response = _generate(
+                        model=model,
+                        prompt=prompt,
+                        options=configuration,
+                        cancellation=token,
+                    )
 
-                prompt_tokens_per_second = _tokens_per_second(
-                    prompt_tokens,
-                    prompt_duration_ns,
-                )
+                    duration = time.perf_counter() - started_at
 
-                output_tokens_per_second = _tokens_per_second(
-                    output_tokens,
-                    output_duration_ns,
-                )
+                    prompt_tokens = response.get("prompt_eval_count", 0)
+                    output_tokens = response.get("eval_count", 0)
+                    prompt_duration_ns = response.get("prompt_eval_duration", 0)
+                    output_duration_ns = response.get("eval_duration", 0)
 
-                result = {
+                    prompt_tokens_per_second = _tokens_per_second(
+                        prompt_tokens,
+                        prompt_duration_ns,
+                    )
+
+                    output_tokens_per_second = _tokens_per_second(
+                        output_tokens,
+                        output_duration_ns,
+                    )
+
+                    run_result = {
+                        "index": index,
+                        "success": True,
+                        "prompt": prompt,
+                        "duration_seconds": duration,
+                        "prompt_tokens": prompt_tokens,
+                        "output_tokens": output_tokens,
+                        "prompt_tokens_per_second": prompt_tokens_per_second,
+                        "output_tokens_per_second": output_tokens_per_second,
+                        "done": response.get("done", True),
+                    }
+
+                    if include_output:
+                        run_result["response"] = response.get("response", "")
+
+                    successful.append(run_result)
+
+                    write_log(
+                        level="INFO",
+                        component=COMPONENT,
+                        action="test",
+                        message="Prompt executed",
+                        details={
+                            "name": name,
+                            "prompt_index": index,
+                            "repetition": repetition,
+                            "success": run_result["success"],
+                            "duration_seconds": run_result["duration_seconds"],
+                            "prompt_tokens": run_result["prompt_tokens"],
+                            "output_tokens": run_result["output_tokens"],
+                            "prompt_tokens_per_second": (
+                                run_result["prompt_tokens_per_second"]
+                            ),
+                            "output_tokens_per_second": (
+                                run_result["output_tokens_per_second"]
+                            ),
+                            "done": run_result["done"],
+                        },
+                    )
+
+                except OperationCancelled:
+                    # Cancellation is not a prompt failure: it must not be
+                    # recorded as a result, and it stops the run rather than
+                    # continuing.
+                    raise
+
+                except Exception as error:
+                    duration = (
+                        time.perf_counter() - started_at
+                        if started_at is not None
+                        else 0.0
+                    )
+
+                    errors.append(str(error))
+
+                    write_log(
+                        level="ERROR",
+                        component=COMPONENT,
+                        action="test",
+                        message="Prompt execution failed",
+                        details={
+                            "name": name,
+                            "prompt_index": index,
+                            "repetition": repetition,
+                            "success": False,
+                            "duration_seconds": duration,
+                            "error": str(error),
+                        },
+                    )
+
+            if successful:
+                result = _summarize_repetitions(successful)
+                result.update({
                     "index": index,
                     "success": True,
                     "prompt": prompt,
-                    "duration_seconds": duration,
-                    "prompt_tokens": prompt_tokens,
-                    "output_tokens": output_tokens,
-                    "prompt_tokens_per_second": prompt_tokens_per_second,
-                    "output_tokens_per_second": output_tokens_per_second,
-                    "done": response.get("done", True),
-                }
+                })
 
                 if include_output:
-                    result["response"] = response.get("response", "")
+                    # The generated text of the last successful run stands for
+                    # the prompt: every repetition sees the same seed unless the
+                    # configuration asks otherwise, and the text is what a
+                    # reader wants to eyeball rather than a per-run list.
+                    result["response"] = successful[-1].get("response", "")
 
-                results.append(result)
-
-                write_log(
-                    level="INFO",
-                    component=COMPONENT,
-                    action="test",
-                    message="Prompt executed",
-                    details={
-                        "name": name,
-                        "prompt_index": index,
-                        "success": result["success"],
-                        "duration_seconds": result["duration_seconds"],
-                        "prompt_tokens": result["prompt_tokens"],
-                        "output_tokens": result["output_tokens"],
-                        "prompt_tokens_per_second": (
-                            result["prompt_tokens_per_second"]
-                        ),
-                        "output_tokens_per_second": (
-                            result["output_tokens_per_second"]
-                        ),
-                        "done": result["done"],
-                    },
-                )
-
-            except OperationCancelled:
-                # Cancellation is not a prompt failure: it must not be recorded
-                # as a result, and it stops the run rather than continuing.
-                raise
-
-            except Exception as error:
-                duration = (
-                    time.perf_counter() - started_at
-                    if started_at is not None
-                    else 0.0
-                )
-
+                if errors:
+                    # Some repetitions failed while others succeeded: the
+                    # averages stand on the successful runs alone, and the
+                    # count says how much of the work did not report.
+                    result["failed_repetitions"] = len(errors)
+            else:
+                # Every repetition failed: the prompt reports the last error,
+                # which is the one a caller retrying would face again.
                 result = {
                     "index": index,
                     "success": False,
                     "prompt": prompt,
-                    "duration_seconds": duration,
-                    "error": str(error),
+                    "duration_seconds": 0.0,
+                    "error": errors[-1] if errors else "Unknown error",
                 }
 
-                results.append(result)
+                if repetitions > 1:
+                    result["error_count"] = len(errors)
 
-                write_log(
-                    level="ERROR",
-                    component=COMPONENT,
-                    action="test",
-                    message="Prompt execution failed",
-                    details={
-                        "name": name,
-                        "prompt_index": index,
-                        "success": False,
-                        "duration_seconds": duration,
-                        "error": str(error),
-                    },
-                )
+            results.append(result)
 
     except OperationCancelled as error:
         _cleanup_cancelled_test(
@@ -461,6 +534,7 @@ def compare_tests(
     configurations: list[dict],
     include_output: bool = False,
     cancellation: CancellationToken | None = None,
+    repetitions: int = 1,
 ) -> dict:
     """Run the same prompts against multiple temporary model configurations.
 
@@ -472,12 +546,17 @@ def compare_tests(
         include_output: Whether to include generated output in test results.
             Defaults to False.
         cancellation: Optional token that stops the comparison part-way.
+        repetitions: How many times every prompt runs per configuration, from
+            1. Averaging runs the same way :func:`run_test` averages them, so
+            every configuration's numbers carry a stddev a caller can compare
+            differences against.
 
     Returns:
         dict: Aggregated comparison results across all configurations.
 
     Raises:
-        ValueError: If model, prompts, or configurations are empty.
+        ValueError: If model, prompts, or configurations are empty, or
+            repetitions is not 1 or greater.
         TypeError: If configurations or prompt items are invalid types.
         OperationCancelled: If the token is cancelled. Results collected so far
             are discarded, so a cancelled comparison leaves nothing behind but
@@ -494,6 +573,12 @@ def compare_tests(
 
     if not isinstance(include_output, bool):
         raise TypeError("include_output must be a boolean")
+
+    if not isinstance(repetitions, int) or isinstance(repetitions, bool):
+        raise TypeError("repetitions must be an integer")
+
+    if repetitions < 1:
+        raise ValueError(f"repetitions must be 1 or greater, got {repetitions}")
 
     # Shared with every `run_test` below, so one cancellation stops the whole
     # comparison rather than only the configuration that was running.
@@ -543,6 +628,7 @@ def compare_tests(
                 name=configuration["name"],
                 include_output=include_output,
                 cancellation=token,
+                repetitions=repetitions,
             )
         except OperationCancelled as error:
             # run_test has already unloaded the model and logged its own
@@ -660,3 +746,89 @@ def _tokens_per_second(
         return None
 
     return token_count / duration_seconds
+
+
+def _mean(values: list[float]) -> float | None:
+    """Return the arithmetic mean, or None for an empty sample.
+
+    Args:
+        values: Sample of one measured metric across repetitions.
+
+    Returns:
+        float | None: The mean, or None when nothing was measured.
+    """
+    if not values:
+        return None
+
+    return sum(values) / len(values)
+
+
+def _stddev(values: list[float]) -> float | None:
+    """Return the population standard deviation of a sample.
+
+    A single measurement has no spread to speak of, so it reports zero rather
+    than None: callers can compare variability across prompts without special-
+    casing the one-repetition runs that are the default.
+
+    Args:
+        values: Sample of one measured metric across repetitions.
+
+    Returns:
+        float | None: The standard deviation, or None for an empty sample.
+    """
+    if not values:
+        return None
+
+    if len(values) == 1:
+        return 0.0
+
+    mean = sum(values) / len(values)
+
+    variance = sum(
+        (value - mean) ** 2 for value in values
+    ) / len(values)
+
+    return variance ** 0.5
+
+
+def _summarize_repetitions(
+    repetitions: list[dict],
+) -> dict | None:
+    """Collapse one prompt's repetitions into averaged metrics with spread.
+
+    Only successful repetitions carry timings, so an all-failed prompt has
+    nothing to average and reports None — the caller then shows the error
+    instead of invented numbers.
+
+    Args:
+        repetitions: Successful run results for one prompt, in execution order.
+
+    Returns:
+        dict | None: Mean for every numeric metric plus standard deviation,
+        minimum and maximum for the timing and rate metrics, and the repetition
+        count; or None when the list is empty.
+    """
+    if not repetitions:
+        return None
+
+    summary: dict = {"repetitions": len(repetitions)}
+
+    for metric in NUMERIC_METRICS:
+        values = [
+            repetition[metric]
+            for repetition in repetitions
+            if repetition.get(metric) is not None
+        ]
+
+        summary[metric] = _mean(values)
+
+        if metric in SPREAD_METRICS:
+            summary[f"{metric}_stddev"] = _stddev(values)
+            summary[f"{metric}_min"] = min(values) if values else None
+            summary[f"{metric}_max"] = max(values) if values else None
+
+    summary["done"] = all(
+        repetition.get("done", True) for repetition in repetitions
+    )
+
+    return summary
