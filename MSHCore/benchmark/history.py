@@ -458,8 +458,9 @@ def list_saved() -> list[dict]:
 
     Returns:
         list[dict]: One record per saved run, each carrying 'id',
-        'saved_at', 'model', 'repetitions', 'configuration_count',
-        'prompt_count', 'winner' and 'significant'.
+        'saved_at', 'model' (or 'models' for a cross-model run),
+        'repetitions', 'configuration_count', 'prompt_count', 'winner' and
+        'significant'.
     """
     records = _read_index()
     available = [

@@ -5,8 +5,10 @@ application data::
 
     %LOCALAPPDATA%\\MSH
     ├── downloads/          completed downloads
-    └── logs/
-        └── executions.log  the execution log
+    ├── logs/
+    │   └── executions.log  the execution log
+    ├── benchmarks/         saved benchmark comparison runs
+    └── progress/           one persisted snapshot per tracked operation
 
 The paths are collected here so the download manager and the logger cannot
 drift apart, and so a caller that wants to know where something landed reads

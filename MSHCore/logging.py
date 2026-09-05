@@ -31,6 +31,8 @@ def get_log_file_info() -> dict:
 
         %LOCALAPPDATA%\\MSH\\
         ├── downloads/
+        ├── benchmarks/
+        ├── progress/
         └── logs/
             └── executions.log
 
