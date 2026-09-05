@@ -328,7 +328,8 @@ def run_test(
             the callback is logged and dropped rather than failing the run.
 
     Returns:
-        dict: Test execution results and summary statistics.
+        dict: Test execution results and summary statistics, including the
+            repetition count every prompt was averaged over.
 
     Raises:
         ValueError: If model name is empty, prompts list is empty, or
@@ -614,6 +615,7 @@ def run_test(
         "name": name,
         "model": model,
         "configuration": configuration,
+        "repetitions": repetitions,
         "results": results,
         "summary": summary,
     }
@@ -680,54 +682,88 @@ def _cleanup_cancelled_test(
     )
 
 
-def compare_tests(
-    model: str,
-    prompts: list[str],
-    configurations: list[dict],
+def run_benchmark(
+    experiments: list[dict],
+    shared_prompts: list[str] | None = None,
     include_output: bool = False,
     cancellation: CancellationToken | None = None,
     repetitions: int = 1,
     on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
-    """Run the same prompts against multiple temporary model configurations.
+    """Benchmark a matrix of models, configurations and prompts.
+
+    Each experiment names one model and the temporary configurations it runs
+    under, and every configuration answers ``shared_prompts`` — one that
+    carries prompts of its own answers those in addition. Every leaf of the
+    matrix is one :func:`run_test`, so every model-configuration pair is
+    measured the same way: prompts averaged over ``repetitions`` runs, with
+    the run-to-run spread reported beside the means.
+
+    The two comparisons this module used to offer as separate functions —
+    one model under several configurations, and several models under one —
+    are plain shapes of this matrix, built by passing the experiments that
+    name them.
+
+    Models are benchmarked one after another, and the model measured before
+    is unloaded before the next one loads: two models resident at once would
+    compete for the same VRAM and make every timing in both meaningless. The
+    configurations of one model run back to back while it stays loaded —
+    unloading between them would only add the same load cost to each. A
+    model that was already loaded before the comparison began is not the
+    comparison's to stop — only the models this call loaded are unloaded, so
+    the machine is left as it was found.
 
     Args:
-        model: Ollama model name.
-        prompts: List of evaluation prompt strings.
-        configurations: List of configuration dictionaries with 'name' and
-            'options'.
-        include_output: Whether to include generated output in test results.
-            Defaults to False.
+        experiments: One dictionary per model, in run order. 'model' is the
+            Ollama model name or tag, and 'configurations' — optional — is a
+            list of dictionaries, defaulting to a single default
+            configuration. Each configuration carries an optional 'name'
+            (defaulting to its position), optional 'options' (the generation
+            parameters, defaulting to empty) and optional 'prompts'
+            (defaulting to ``shared_prompts``).
+        shared_prompts: The prompts every configuration runs, before any
+            prompts of its own. Optional when every configuration carries
+            its own.
+        include_output: Whether to keep generated text in results. Defaults
+            to False.
         cancellation: Optional token that stops the comparison part-way.
-        repetitions: How many times every prompt runs per configuration, from
-            1. Averaging runs the same way :func:`run_test` averages them, so
-            every configuration's numbers carry a stddev a caller can compare
-            differences against.
-        on_progress: Optional callable receiving one progress dict per step of
-            the comparison: which configuration (name and position), which
-            prompt and repetition, how many of each, and how many steps the
-            whole comparison has completed. See :func:`run_test` for the
-            delivery and failure guarantees.
+        repetitions: How many times every prompt runs per configuration,
+            from 1.
+        on_progress: Optional callable receiving one progress dict per step
+            of the comparison: which model and which configuration (name and
+            position of each), which prompt and repetition, how many of both,
+            and how many steps the whole comparison has completed and will
+            run in total. See :func:`run_test` for the delivery and failure
+            guarantees.
 
     Returns:
-        dict: Aggregated comparison results across all configurations.
+        dict: 'experiments' echoes the normalized matrix that ran, 'models'
+        lists the model names in run order, and 'tests' holds one run_test
+        result per model-configuration pair — its timings, noise spread and
+        VRAM readings. 'significance' judges the matrix the two ways it can
+        fairly be judged: 'by_model' assesses each model's configurations
+        against one another, and 'across_models' assesses the models
+        themselves, each represented by its fastest configuration — both by
+        reading the gap between the top two averages against their own
+        run-to-run noise.
 
     Raises:
-        ValueError: If model, prompts, or configurations are empty, or
-            repetitions is not 1 or greater.
-        TypeError: If configurations or prompt items are invalid types.
-        OperationCancelled: If the token is cancelled. Results collected so far
-            are discarded, so a cancelled comparison leaves nothing behind but
-            its log entry.
+        ValueError: If experiments is empty, an experiment names no model, a
+            configuration ends up with no prompts, or repetitions is not 1 or
+            greater.
+        TypeError: If experiments, a configuration, prompts or repetitions
+            have the wrong types.
+        OperationCancelled: If the token is cancelled. Results collected so
+            far are discarded — a cancelled comparison leaves nothing behind
+            but its log entry, and no model in memory.
     """
-    if not model.strip():
-        raise ValueError("Model name is required")
+    if not isinstance(experiments, list) or not experiments:
+        raise ValueError("At least one experiment is required")
 
-    if not prompts:
-        raise ValueError("At least one prompt is required")
-
-    if not configurations:
-        raise ValueError("At least one configuration is required")
+    if shared_prompts is not None and not isinstance(
+        shared_prompts, (list, tuple)
+    ):
+        raise TypeError("shared_prompts must be a list of strings or None")
 
     if not isinstance(include_output, bool):
         raise TypeError("include_output must be a boolean")
@@ -738,113 +774,223 @@ def compare_tests(
     if repetitions < 1:
         raise ValueError(f"repetitions must be 1 or greater, got {repetitions}")
 
-    # Shared with every `run_test` below, so one cancellation stops the whole
-    # comparison rather than only the configuration that was running.
+    # One token for every run_test below, so one cancellation stops the whole
+    # comparison rather than only the experiment that was running.
     token = cancellation if cancellation is not None else CancellationToken()
 
-    normalized_configurations = []
+    normalized_experiments = []
 
-    for index, configuration in enumerate(configurations, start=1):
-        if not isinstance(configuration, dict):
-            raise TypeError(f"Configuration {index} must be a dictionary")
-
-        name = configuration.get("name", f"configuration_{index}")
-        options = configuration.get("options", {})
-
-        if not isinstance(options, dict):
+    for experiment_index, experiment in enumerate(experiments, start=1):
+        if not isinstance(experiment, dict):
             raise TypeError(
-                f"Configuration '{name}' options must be a dictionary"
+                f"Experiment {experiment_index} must be a dictionary"
             )
 
-        normalized_configurations.append({
-            "name": name,
-            "options": options,
+        model = experiment.get("model")
+
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError(
+                f"Experiment {experiment_index} must name a model"
+            )
+
+        raw_configurations = experiment.get("configurations")
+
+        if raw_configurations is None:
+            # A model with no configurations of its own runs once, under its
+            # defaults, under the name a reader would recognize it by.
+            raw_configurations = [{"name": "default", "options": {}}]
+
+        if not isinstance(raw_configurations, list) or not raw_configurations:
+            raise ValueError(
+                f"Experiment '{model}' must carry at least one configuration"
+            )
+
+        configurations = []
+
+        for configuration_index, configuration in enumerate(
+            raw_configurations, start=1
+        ):
+            if not isinstance(configuration, dict):
+                raise TypeError(
+                    f"Configuration {configuration_index} of '{model}' must "
+                    f"be a dictionary"
+                )
+
+            name = configuration.get(
+                "name", f"configuration_{configuration_index}"
+            )
+            options = configuration.get("options", {})
+
+            if not isinstance(options, dict):
+                raise TypeError(
+                    f"Configuration '{name}' options must be a dictionary"
+                )
+
+            own_prompts = configuration.get("prompts")
+
+            if own_prompts is not None and not isinstance(
+                own_prompts, (list, tuple)
+            ):
+                raise TypeError(
+                    f"Configuration '{name}' prompts must be a list of "
+                    f"strings"
+                )
+
+            # The shared prompts run for every configuration; a
+            # configuration with its own adds those after them, so the
+            # common baseline every configuration answers stays aligned
+            # at the front of each run.
+            prompts = list(shared_prompts or []) + list(own_prompts or [])
+
+            if not prompts:
+                raise ValueError(
+                    f"Configuration '{name}' has no prompts to run: it "
+                    f"carries none of its own and the benchmark was given "
+                    f"no shared_prompts"
+                )
+
+            configurations.append({
+                "name": name,
+                "options": dict(options),
+                "prompts": prompts,
+            })
+
+        normalized_experiments.append({
+            "model": model,
+            "configurations": configurations,
         })
 
     write_log(
         level="INFO",
         component=COMPONENT,
         action="compare",
-        message="Tests started",
+        message="Comparison started",
         details={
-            "model": model,
-            "prompts": prompts,
-            "configurations": normalized_configurations,
+            "experiments": normalized_experiments,
+            "repetitions": repetitions,
         },
     )
 
+    total_steps = sum(
+        len(configuration["prompts"]) * repetitions
+        for experiment in normalized_experiments
+        for configuration in experiment["configurations"]
+    )
+
     tests = []
+    loaded: str | None = None
+    steps_before = 0
 
-    for position, configuration in enumerate(normalized_configurations, start=1):
-        token.raise_if_cancelled()
+    try:
+        for model_position, experiment in enumerate(
+            normalized_experiments, start=1
+        ):
+            token.raise_if_cancelled()
 
-        # The comparison's steps are its configurations' steps, prefixed with
-        # which configuration each belongs to, so one counter covers the whole
-        # comparison for a caller drawing a single progress bar.
-        steps_done = len(tests) * len(prompts) * repetitions
+            if loaded is not None and loaded != experiment["model"]:
+                _unload_model(loaded)
 
-        def _comparison_progress(
-            step: dict,
-            _configuration=configuration,
-            _position=position,
-            _steps_done=steps_done,
-        ) -> None:
-            on_progress({
-                **step,
-                "configuration": _configuration["name"],
-                "configuration_index": _position,
-                "configuration_count": len(normalized_configurations),
-                "completed": _steps_done + step.get("completed", 0),
-            })
+            for configuration_position, configuration in enumerate(
+                experiment["configurations"], start=1
+            ):
+                token.raise_if_cancelled()
 
-        runner_progress = _comparison_progress if on_progress is not None else None
+                # The comparison's steps are its leaves' steps, prefixed with
+                # which model and configuration each belongs to, so one
+                # counter covers the whole comparison for a caller drawing a
+                # single progress bar. The loop variables are bound as
+                # defaults, so each closure keeps the step it was made for.
+                def _comparison_progress(
+                    step: dict,
+                    _model=experiment["model"],
+                    _model_position=model_position,
+                    _model_count=len(normalized_experiments),
+                    _configuration=configuration["name"],
+                    _configuration_position=configuration_position,
+                    _configuration_count=len(experiment["configurations"]),
+                    _steps_before=steps_before,
+                ) -> None:
+                    on_progress({
+                        **step,
+                        "model": _model,
+                        "model_index": _model_position,
+                        "model_count": _model_count,
+                        "configuration": _configuration,
+                        "configuration_index": _configuration_position,
+                        "configuration_count": _configuration_count,
+                        "completed": _steps_before + step.get("completed", 0),
+                        "total": total_steps,
+                    })
 
-        try:
-            result = run_test(
-                model=model,
-                prompts=prompts,
-                config=configuration["options"],
-                name=configuration["name"],
-                include_output=include_output,
-                cancellation=token,
-                repetitions=repetitions,
-                on_progress=runner_progress,
-            )
-        except OperationCancelled as error:
-            # run_test has already unloaded the model and logged its own
-            # cancellation; discard the finished configurations so no partial
-            # comparison survives, and record what the comparison as a whole
-            # lost.
-            log_cancelled(
-                component=COMPONENT,
-                action="compare",
-                message="Tests cancelled",
-                details={
-                    "model": model,
-                    "configurations_completed": len(tests),
-                    "configurations_total": len(normalized_configurations),
-                    "partial_results_discarded": len(tests),
-                    "reason": str(error),
-                },
-            )
-            tests.clear()
-            raise
+                try:
+                    result = run_test(
+                        model=experiment["model"],
+                        prompts=configuration["prompts"],
+                        config=configuration["options"],
+                        name=configuration["name"],
+                        include_output=include_output,
+                        cancellation=token,
+                        repetitions=repetitions,
+                        on_progress=(
+                            _comparison_progress
+                            if on_progress is not None
+                            else None
+                        ),
+                    )
+                except OperationCancelled as error:
+                    # run_test has already unloaded the model it had loaded
+                    # and logged its own cancellation; discard the finished
+                    # pairs so no partial comparison survives, and record
+                    # what the comparison as a whole lost.
+                    log_cancelled(
+                        component=COMPONENT,
+                        action="compare",
+                        message="Comparison cancelled",
+                        details={
+                            "models": [
+                                entry["model"]
+                                for entry in normalized_experiments
+                            ],
+                            "experiments_completed": model_position - 1,
+                            "experiments_total": len(normalized_experiments),
+                            "partial_results_discarded": len(tests),
+                            "reason": str(error),
+                        },
+                    )
+                    tests.clear()
+                    raise
 
-        tests.append(result)
+                tests.append(result)
+                steps_before += len(configuration["prompts"]) * repetitions
+
+            loaded = experiment["model"]
+
+    finally:
+        # run_test unloads its own model when a cancellation ends it; on every
+        # other exit the last model measured is unloaded here, so the
+        # comparison leaves no model in memory whatever its outcome.
+        if loaded is not None:
+            _unload_model(loaded)
 
     result = {
-        "model": model,
+        "experiments": normalized_experiments,
+        "models": [
+            experiment["model"] for experiment in normalized_experiments
+        ],
         "tests": tests,
-        "significance": _assess_significance(tests),
+        "significance": _assess_comparison(
+            tests,
+            [experiment["model"] for experiment in normalized_experiments],
+        ),
     }
 
     write_log(
         level="INFO",
         component=COMPONENT,
         action="compare",
-        message="Tests completed",
+        message="Comparison completed",
         details={
-            "model": model,
+            "models": result["models"],
         },
     )
 
@@ -878,220 +1024,6 @@ def _unload_model(model: str) -> bool:
             },
         )
         return False
-
-
-def compare_models(
-    models: list[str],
-    prompts: list[str],
-    config: dict | None = None,
-    model_configs: dict[str, dict] | None = None,
-    include_output: bool = False,
-    cancellation: CancellationToken | None = None,
-    repetitions: int = 1,
-    on_progress: Callable[[dict], None] | None = None,
-) -> dict:
-    """Run the same prompts and one shared configuration against several models.
-
-    Models are benchmarked one after another, and the model measured before is
-    unloaded before the next one loads: two models resident at once would
-    compete for the same VRAM and make every timing in both meaningless. A
-    model that was already loaded before the comparison began is not the
-    comparison's to stop — only the models this call loaded are unloaded, the
-    one just measured before the next loads and the last one when the run is
-    over, so the machine is left as it was found.
-
-    One configuration applies to every model, because a fair comparison
-    changes one thing at a time; several configurations per model means one
-    :func:`compare_tests` call per configuration instead.
-
-    Args:
-        models: Model names or tags to benchmark, in run order.
-        prompts: Prompt strings every model answers.
-        config: Optional generation parameters shared by every model.
-        model_configs: Optional per-model overrides — a dictionary mapping a
-            model's name to the options it runs with, taking precedence over
-            ``config`` for that model. Models the dictionary does not name
-            fall back to ``config``. This is what a caller uses when each
-            model should run under its own settings.
-        include_output: Whether to keep generated text in results. Defaults
-            to False.
-        cancellation: Optional token that stops the comparison part-way.
-        repetitions: How many times every prompt runs per model, from 1.
-        on_progress: Optional callable receiving one progress dict per step of
-            the comparison: which model (name and position), which prompt and
-            repetition, and how many steps the whole comparison has completed.
-            See :func:`run_test` for the delivery and failure guarantees.
-
-    Returns:
-        dict: Aggregated comparison across models. 'tests' holds one run_test
-        result per model — its timings, noise spread and VRAM readings — with
-        the model's name as the test name, and 'significance' judges the gap
-        between the two fastest models against their own noise, exactly as
-        :func:`compare_tests` judges configurations.
-
-    Raises:
-        ValueError: If models or prompts are empty, a model name is not a
-            non-empty string, or repetitions is not 1 or greater.
-        TypeError: If config is not a dictionary or repetitions is not an
-            integer.
-        OperationCancelled: If the token is cancelled. Results collected so
-            far are discarded — a cancelled comparison leaves nothing behind
-            but its log entry, and no model in memory.
-    """
-    if not isinstance(models, list) or not models:
-        raise ValueError("At least one model is required")
-
-    for position, model_name in enumerate(models, start=1):
-        if not isinstance(model_name, str) or not model_name.strip():
-            raise ValueError(f"Model {position} must be a non-empty string")
-
-    if not prompts:
-        raise ValueError("At least one prompt is required")
-
-    if config is not None and not isinstance(config, dict):
-        raise TypeError("config must be a dictionary or None")
-
-    if not isinstance(include_output, bool):
-        raise TypeError("include_output must be a boolean")
-
-    if not isinstance(repetitions, int) or isinstance(repetitions, bool):
-        raise TypeError("repetitions must be an integer")
-
-    if repetitions < 1:
-        raise ValueError(f"repetitions must be 1 or greater, got {repetitions}")
-
-    if model_configs is not None and not isinstance(model_configs, dict):
-        raise TypeError("model_configs must be a dictionary or None")
-
-    if model_configs:
-        for name, options in model_configs.items():
-            if name not in models:
-                raise ValueError(
-                    f"model_configs names '{name}', which is not among the "
-                    f"models being compared"
-                )
-
-            if options is not None and not isinstance(options, dict):
-                raise TypeError(
-                    f"model_configs['{name}'] must be a dictionary or None"
-                )
-
-    token = cancellation if cancellation is not None else CancellationToken()
-
-    configuration = dict(config or {})
-
-    write_log(
-        level="INFO",
-        component=COMPONENT,
-        action="compare_models",
-        message="Model comparison started",
-        details={
-            "models": models,
-            "prompts": prompts,
-            "config": configuration,
-            "model_configs": model_configs or {},
-            "repetitions": repetitions,
-        },
-    )
-
-    tests = []
-    loaded: str | None = None
-
-    try:
-        for model_position, model_name in enumerate(models, start=1):
-            token.raise_if_cancelled()
-
-            if loaded is not None:
-                _unload_model(loaded)
-
-            # The per-model override wins for the model it names; everything
-            # else runs under the shared configuration.
-            model_configuration = dict(configuration)
-
-            if model_configs and model_configs.get(model_name):
-                model_configuration.update(model_configs[model_name])
-
-            # Same counter shape compare_tests gives its configurations: each
-            # step names its model and counts across the whole comparison.
-            steps_before = (model_position - 1) * len(prompts) * repetitions
-
-            def _comparison_progress(
-                step: dict,
-                _model=model_name,
-                _position=model_position,
-                _steps_before=steps_before,
-            ) -> None:
-                on_progress({
-                    **step,
-                    "model": _model,
-                    "model_index": _position,
-                    "model_count": len(models),
-                    "completed": _steps_before + step.get("completed", 0),
-                })
-
-            try:
-                result = run_test(
-                    model=model_name,
-                    prompts=prompts,
-                    config=model_configuration,
-                    name=model_name,
-                    include_output=include_output,
-                    cancellation=token,
-                    repetitions=repetitions,
-                    on_progress=(
-                        _comparison_progress if on_progress is not None else None
-                    ),
-                )
-            except OperationCancelled as error:
-                # run_test has already unloaded the model it had loaded; the
-                # one before it was unloaded on the way out. Discard the
-                # finished models so no partial comparison survives, and
-                # record what the comparison as a whole lost.
-                log_cancelled(
-                    component=COMPONENT,
-                    action="compare_models",
-                    message="Model comparison cancelled",
-                    details={
-                        "models": models,
-                        "models_completed": len(tests),
-                        "models_total": len(models),
-                        "partial_results_discarded": len(tests),
-                        "reason": str(error),
-                    },
-                )
-                tests.clear()
-                raise
-
-            tests.append(result)
-            loaded = model_name
-
-    finally:
-        # run_test unloads its own model when a cancellation ends it; on every
-        # other exit the last model measured is unloaded here, so the
-        # comparison leaves no model in memory whatever its outcome.
-        if loaded is not None:
-            _unload_model(loaded)
-
-    result = {
-        "models": models,
-        "config": configuration,
-        "model_configs": model_configs or {},
-        "repetitions": repetitions,
-        "tests": tests,
-        "significance": _assess_significance(tests),
-    }
-
-    write_log(
-        level="INFO",
-        component=COMPONENT,
-        action="compare_models",
-        message="Model comparison completed",
-        details={
-            "models": models,
-        },
-    )
-
-    return result
 
 
 # How many combined standard deviations two configurations' averages must be
@@ -1202,6 +1134,78 @@ def _assess_significance(tests: list[dict]) -> dict | None:
         "difference_to_noise_ratio": ratio,
         "significant": significant,
         "message": description,
+    }
+
+
+def _assess_comparison(tests: list[dict], models: list[str]) -> dict:
+    """Judge a comparison's matrix per model and across models.
+
+    A matrix holds two comparison questions at once — which of a model's
+    configurations is faster, and which model is — and one flat ranking
+    cannot answer both: the top two entries of the whole pile are usually
+    configurations of different models, which answers neither question. So
+    the matrix is judged the two ways it can fairly be: within each model,
+    across that model's configurations; and across models, each represented
+    by its fastest configuration.
+
+    A model with fewer than two measurable averages cannot support a
+    within-model verdict and carries None there; fewer than two measurable
+    models and the cross-model verdict is None too.
+
+    Args:
+        tests: One run_test result per model-configuration pair, in run
+            order.
+        models: The model names the comparison ran, in run order.
+
+    Returns:
+        dict: 'by_model' maps each model's name to its within-model
+        assessment (or None when it cannot support one), and 'across_models'
+        holds the cross-model assessment or None.
+    """
+    by_model = {}
+
+    for model in models:
+        if model in by_model:
+            # A model named twice runs twice; one verdict covers its tests.
+            continue
+
+        by_model[model] = _assess_significance(
+            [test for test in tests if test.get("model") == model]
+        )
+
+    representatives = []
+
+    for model in by_model:
+        candidates = [
+            test
+            for test in tests
+            if test.get("model") == model
+            and test.get("summary", {}).get(
+                "average_output_tokens_per_second"
+            )
+            is not None
+        ]
+
+        if candidates:
+            fastest = max(
+                candidates,
+                key=lambda test: test["summary"][
+                    "average_output_tokens_per_second"
+                ],
+            )
+
+            # The cross-model verdict speaks of models, so each
+            # representative stands in under its model's name rather than
+            # its configuration's.
+            representatives.append(dict(fastest, name=model))
+
+    return {
+        "by_model": by_model,
+        "across_models": (
+            _assess_significance(representatives)
+            if len(representatives) >= 2
+            else None
+        ),
     }
 
 

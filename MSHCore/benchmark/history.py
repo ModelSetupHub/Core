@@ -1,10 +1,11 @@
 """Persisted benchmark history — every saved comparison is one JSON file.
 
-A comparison run is the unit of history: one model, the prompts every
-configuration answered, and one result per configuration. The three belong
-together — a configuration's numbers only mean something against the others
-it was compared with — so a run is stored whole in a single file rather than
-split per configuration or per model.
+A comparison run is the unit of history: the models that were benchmarked,
+the prompts their configurations answered, and one result per
+model-configuration pair. The pieces belong together — a configuration's
+numbers only mean something against the others it was compared with — so a
+run is stored whole in a single file rather than split per configuration or
+per model.
 
 The store is runner-agnostic: it validates only the shape of what arrives —
 what was benchmarked, and at least one test — and never talks to a model
@@ -156,24 +157,143 @@ def _write_index(records: list[dict]) -> None:
     _write_atomically(_index_path(), records)
 
 
+def _multi_model(tests: list) -> bool:
+    """Tell whether a comparison's tests span more than one model.
+
+    Args:
+        tests: One test result per comparison step.
+
+    Returns:
+        bool: True when the tests carry more than one distinct model name.
+    """
+    return (
+        len({
+            test.get("model")
+            for test in tests
+            if isinstance(test, dict) and test.get("model")
+        })
+        > 1
+    )
+
+
+def _test_label(test: dict, multi_model: bool) -> str:
+    """Name one test result the way a history record lists it.
+
+    A comparison that spans several models can carry two configurations of
+    the same name — two models' defaults, say — so there the model's name
+    prefixes the configuration's, keeping every entry in the record distinct.
+    A test named after its own model needs no prefix.
+
+    Args:
+        test: One test result.
+        multi_model: Whether the result's tests span more than one model.
+
+    Returns:
+        str: The label the test is listed under.
+    """
+    name = test.get("name", "unnamed")
+    model = test.get("model")
+
+    if multi_model and model and model != name:
+        return f"{model} / {name}"
+
+    return name
+
+
+def _distinct_prompts(tests: list) -> list:
+    """Collect the distinct prompts a comparison's tests answered.
+
+    A comparison's configurations can carry prompt lists of their own, so
+    the header takes the union across every test in first-seen order rather
+    than the first test's list: a run whose configurations answered
+    different prompts is still recorded as the one run that posed them all.
+
+    Args:
+        tests: One test result per comparison step.
+
+    Returns:
+        list: The distinct prompts, in the order they were first answered.
+    """
+    prompts = []
+    seen = set()
+
+    for test in tests:
+        if not isinstance(test, dict):
+            continue
+
+        for row in test.get("results", []):
+            if not isinstance(row, dict):
+                continue
+
+            prompt = row.get("prompt")
+
+            if isinstance(prompt, str) and prompt not in seen:
+                seen.add(prompt)
+                prompts.append(prompt)
+
+    return prompts
+
+
+def _list_significance(significance) -> bool | None:
+    """Read the one flag a history list shows from any assessment shape.
+
+    The flat assessment a single-comparison result carries holds
+    'significant' directly. The matrix assessment holds a verdict per model
+    and one across models, and the list shows the cross-model one when
+    there is, falling back to the first within-model verdict the matrix
+    could make.
+
+    Args:
+        significance: The 'significance' of a comparison result, in any of
+            the shapes the toolkit produces.
+
+    Returns:
+        bool | None: The flag, or None when nothing measurable was judged.
+    """
+    if not isinstance(significance, dict):
+        return None
+
+    if "significant" in significance:
+        return significance.get("significant")
+
+    across = significance.get("across_models")
+
+    if isinstance(across, dict):
+        return across.get("significant")
+
+    for assessment in significance.get("by_model", {}).values():
+        if (
+            isinstance(assessment, dict)
+            and assessment.get("significant") is not None
+        ):
+            return assessment.get("significant")
+
+    return None
+
+
 def _summarize_result(result: dict) -> dict | None:
     """Read the winner's figures a list needs out of a comparison result.
 
     Args:
-        result: A compare_tests result as produced by the toolkit.
+        result: A comparison result as produced by the toolkit.
 
     Returns:
-        dict | None: Per-configuration averages keyed by name, the fastest
-        configuration's name, and the significance assessment when one was
-        made; None when the result holds no measurable configuration.
+        dict | None: Per-configuration averages keyed by label, the fastest
+        configuration's label, and the significance flag when one was made;
+        None when the result holds no measurable configuration.
     """
+    tests = [
+        test for test in result.get("tests", []) if isinstance(test, dict)
+    ]
+
+    multi_model = _multi_model(tests)
     averages = {}
 
-    for test in result.get("tests", []):
+    for test in tests:
         rate = test.get("summary", {}).get("average_output_tokens_per_second")
 
         if rate is not None:
-            averages[test.get("name", "unnamed")] = rate
+            averages[_test_label(test, multi_model)] = rate
 
     if not averages:
         return None
@@ -184,9 +304,7 @@ def _summarize_result(result: dict) -> dict | None:
     return {
         "average_output_tokens_per_second": averages,
         "winner": winner,
-        "significant": (
-            significance.get("significant") if significance else None
-        ),
+        "significant": _list_significance(significance),
     }
 
 
@@ -202,9 +320,9 @@ def save(result: dict) -> str:
     accident is not something that can happen.
 
     Args:
-        result: A compare_tests or compare_models result dictionary, carrying
-            'tests' plus either 'model' or a 'models' list, and optionally
-            'significance'.
+        result: A comparison result as produced by :func:`run_benchmark`,
+            carrying 'tests' plus either 'model' or a 'models' list, and
+            optionally 'significance'.
 
     Returns:
         str: The identifier the run was saved under.
@@ -243,6 +361,8 @@ def save(result: dict) -> str:
     if not isinstance(tests, list) or not tests:
         raise ValueError("result must carry at least one test result")
 
+    multi_model = _multi_model(tests)
+
     saved_at = time.strftime("%Y-%m-%dT%H:%M:%S")
     benchmark_id = (
         time.strftime("%Y%m%dT%H%M%S")
@@ -255,17 +375,14 @@ def save(result: dict) -> str:
         "saved_at": saved_at,
         "model": model,
         "models": models,
-        "prompts": [
-            prompt.get("prompt")
-            for prompt in tests[0].get("results", [])
-            if isinstance(prompt, dict)
-        ],
+        "prompts": _distinct_prompts(tests),
         "configurations": [
             {
-                "name": test.get("name"),
+                "name": _test_label(test, multi_model),
                 "options": test.get("configuration", {}),
             }
             for test in tests
+            if isinstance(test, dict)
         ],
         "repetitions": tests[0].get("repetitions", 1),
         "summary": _summarize_result(result),
