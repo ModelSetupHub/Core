@@ -887,6 +887,7 @@ def compare_models(
     include_output: bool = False,
     cancellation: CancellationToken | None = None,
     repetitions: int = 1,
+    on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Run the same prompts and one shared configuration against several models.
 
@@ -910,6 +911,10 @@ def compare_models(
             to False.
         cancellation: Optional token that stops the comparison part-way.
         repetitions: How many times every prompt runs per model, from 1.
+        on_progress: Optional callable receiving one progress dict per step of
+            the comparison: which model (name and position), which prompt and
+            repetition, and how many steps the whole comparison has completed.
+            See :func:`run_test` for the delivery and failure guarantees.
 
     Returns:
         dict: Aggregated comparison across models. 'tests' holds one run_test
@@ -970,11 +975,29 @@ def compare_models(
     loaded: str | None = None
 
     try:
-        for model_name in models:
+        for model_position, model_name in enumerate(models, start=1):
             token.raise_if_cancelled()
 
             if loaded is not None:
                 _unload_model(loaded)
+
+            # Same counter shape compare_tests gives its configurations: each
+            # step names its model and counts across the whole comparison.
+            steps_before = (model_position - 1) * len(prompts) * repetitions
+
+            def _comparison_progress(
+                step: dict,
+                _model=model_name,
+                _position=model_position,
+                _steps_before=steps_before,
+            ) -> None:
+                on_progress({
+                    **step,
+                    "model": _model,
+                    "model_index": _position,
+                    "model_count": len(models),
+                    "completed": _steps_before + step.get("completed", 0),
+                })
 
             try:
                 result = run_test(
@@ -985,6 +1008,9 @@ def compare_models(
                     include_output=include_output,
                     cancellation=token,
                     repetitions=repetitions,
+                    on_progress=(
+                        _comparison_progress if on_progress is not None else None
+                    ),
                 )
             except OperationCancelled as error:
                 # run_test has already unloaded the model it had loaded; the
