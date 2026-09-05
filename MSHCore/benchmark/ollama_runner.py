@@ -884,6 +884,7 @@ def compare_models(
     models: list[str],
     prompts: list[str],
     config: dict | None = None,
+    model_configs: dict[str, dict] | None = None,
     include_output: bool = False,
     cancellation: CancellationToken | None = None,
     repetitions: int = 1,
@@ -907,6 +908,11 @@ def compare_models(
         models: Model names or tags to benchmark, in run order.
         prompts: Prompt strings every model answers.
         config: Optional generation parameters shared by every model.
+        model_configs: Optional per-model overrides — a dictionary mapping a
+            model's name to the options it runs with, taking precedence over
+            ``config`` for that model. Models the dictionary does not name
+            fall back to ``config``. This is what a caller uses when each
+            model should run under its own settings.
         include_output: Whether to keep generated text in results. Defaults
             to False.
         cancellation: Optional token that stops the comparison part-way.
@@ -954,6 +960,22 @@ def compare_models(
     if repetitions < 1:
         raise ValueError(f"repetitions must be 1 or greater, got {repetitions}")
 
+    if model_configs is not None and not isinstance(model_configs, dict):
+        raise TypeError("model_configs must be a dictionary or None")
+
+    if model_configs:
+        for name, options in model_configs.items():
+            if name not in models:
+                raise ValueError(
+                    f"model_configs names '{name}', which is not among the "
+                    f"models being compared"
+                )
+
+            if options is not None and not isinstance(options, dict):
+                raise TypeError(
+                    f"model_configs['{name}'] must be a dictionary or None"
+                )
+
     token = cancellation if cancellation is not None else CancellationToken()
 
     configuration = dict(config or {})
@@ -967,6 +989,7 @@ def compare_models(
             "models": models,
             "prompts": prompts,
             "config": configuration,
+            "model_configs": model_configs or {},
             "repetitions": repetitions,
         },
     )
@@ -980,6 +1003,13 @@ def compare_models(
 
             if loaded is not None:
                 _unload_model(loaded)
+
+            # The per-model override wins for the model it names; everything
+            # else runs under the shared configuration.
+            model_configuration = dict(configuration)
+
+            if model_configs and model_configs.get(model_name):
+                model_configuration.update(model_configs[model_name])
 
             # Same counter shape compare_tests gives its configurations: each
             # step names its model and counts across the whole comparison.
@@ -1003,7 +1033,7 @@ def compare_models(
                 result = run_test(
                     model=model_name,
                     prompts=prompts,
-                    config=configuration,
+                    config=model_configuration,
                     name=model_name,
                     include_output=include_output,
                     cancellation=token,
@@ -1045,6 +1075,7 @@ def compare_models(
     result = {
         "models": models,
         "config": configuration,
+        "model_configs": model_configs or {},
         "repetitions": repetitions,
         "tests": tests,
         "significance": _assess_significance(tests),
