@@ -1,5 +1,6 @@
 """Ollama model benchmarking and multi-configuration experimental testing."""
 
+from collections.abc import Callable
 import json
 import threading
 import time
@@ -42,6 +43,56 @@ SPREAD_METRICS = (
     "ttft_seconds",
     "gpu_temperature_c",
 )
+
+
+def _emit_progress(
+    on_progress: Callable[[dict], None],
+    phase: str,
+    prompt_index: int,
+    prompt_count: int,
+    repetition: int,
+    repetition_count: int,
+    completed: int,
+) -> None:
+    """Hand one progress step to a run's callback, absorbing its failures.
+
+    A progress callback exists so a caller can show the user where a long run
+    is; a bug in it must not be able to end a benchmark that has already been
+    running for minutes. Anything it raises is logged and the run continues.
+
+    Args:
+        on_progress: The caller's callback.
+        phase: Either 'prompt_start' (a prompt is about to run, no repetition
+            has) or 'repetition_done' (one repetition just finished).
+        prompt_index: 1-based prompt position within the test.
+        prompt_count: Prompts the test will run.
+        repetition: 1-based repetition that just finished, or 0 on
+            'prompt_start'.
+        repetition_count: Repetitions each prompt runs.
+        completed: Repetitions finished so far in this test.
+    """
+    try:
+        on_progress({
+            "phase": phase,
+            "prompt_index": prompt_index,
+            "prompt_count": prompt_count,
+            "repetition": repetition,
+            "repetition_count": repetition_count,
+            "completed": completed,
+        })
+    except Exception as error:
+        write_log(
+            level="WARNING",
+            component=COMPONENT,
+            action="progress",
+            message="Progress callback failed",
+            details={
+                "phase": phase,
+                "prompt_index": prompt_index,
+                "repetition": repetition,
+                "error": str(error),
+            },
+        )
 
 
 def _generate(
@@ -238,6 +289,7 @@ def run_test(
     include_output: bool = False,
     cancellation: CancellationToken | None = None,
     repetitions: int = 1,
+    on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Run one temporary model configuration against multiple prompts.
 
@@ -268,6 +320,12 @@ def run_test(
         repetitions: How many times every prompt is executed, from 1. The
             first repetition doubles as the warmup the following ones benefit
             from; results average them all.
+        on_progress: Optional callable called once with the configuration's
+            identity before the first prompt runs, and once after every
+            individual repetition finishes with the step the run is at:
+            which prompt, which repetition, how many of both, and how many
+            steps have completed. Progress is best-effort — an exception from
+            the callback is logged and dropped rather than failing the run.
 
     Returns:
         dict: Test execution results and summary statistics.
@@ -326,6 +384,17 @@ def run_test(
             # but no timing, so averaging never mixes numbers with failures.
             successful: list[dict] = []
             errors: list[str] = []
+
+            if on_progress is not None:
+                _emit_progress(
+                    on_progress,
+                    phase="prompt_start",
+                    prompt_index=index,
+                    prompt_count=len(prompts),
+                    repetition=0,
+                    repetition_count=repetitions,
+                    completed=0,
+                )
 
             for repetition in range(1, repetitions + 1):
                 token.raise_if_cancelled()
@@ -479,6 +548,18 @@ def run_test(
                         },
                     )
 
+                if on_progress is not None:
+                    completed = len(successful) + len(errors)
+                    _emit_progress(
+                        on_progress,
+                        phase="repetition_done",
+                        prompt_index=index,
+                        prompt_count=len(prompts),
+                        repetition=repetition,
+                        repetition_count=repetitions,
+                        completed=completed,
+                    )
+
             if successful:
                 result = _summarize_repetitions(successful)
                 result.update({
@@ -606,6 +687,7 @@ def compare_tests(
     include_output: bool = False,
     cancellation: CancellationToken | None = None,
     repetitions: int = 1,
+    on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Run the same prompts against multiple temporary model configurations.
 
@@ -621,6 +703,11 @@ def compare_tests(
             1. Averaging runs the same way :func:`run_test` averages them, so
             every configuration's numbers carry a stddev a caller can compare
             differences against.
+        on_progress: Optional callable receiving one progress dict per step of
+            the comparison: which configuration (name and position), which
+            prompt and repetition, how many of each, and how many steps the
+            whole comparison has completed. See :func:`run_test` for the
+            delivery and failure guarantees.
 
     Returns:
         dict: Aggregated comparison results across all configurations.
@@ -688,8 +775,29 @@ def compare_tests(
 
     tests = []
 
-    for configuration in normalized_configurations:
+    for position, configuration in enumerate(normalized_configurations, start=1):
         token.raise_if_cancelled()
+
+        # The comparison's steps are its configurations' steps, prefixed with
+        # which configuration each belongs to, so one counter covers the whole
+        # comparison for a caller drawing a single progress bar.
+        steps_done = len(tests) * len(prompts) * repetitions
+
+        def _comparison_progress(
+            step: dict,
+            _configuration=configuration,
+            _position=position,
+            _steps_done=steps_done,
+        ) -> None:
+            on_progress({
+                **step,
+                "configuration": _configuration["name"],
+                "configuration_index": _position,
+                "configuration_count": len(normalized_configurations),
+                "completed": _steps_done + step.get("completed", 0),
+            })
+
+        runner_progress = _comparison_progress if on_progress is not None else None
 
         try:
             result = run_test(
@@ -700,6 +808,7 @@ def compare_tests(
                 include_output=include_output,
                 cancellation=token,
                 repetitions=repetitions,
+                on_progress=runner_progress,
             )
         except OperationCancelled as error:
             # run_test has already unloaded the model and logged its own
