@@ -1,15 +1,138 @@
 """Ollama model lifecycle management, configuration, and execution."""
 
+from collections.abc import Callable
 import json
 from pathlib import Path
+import re
 import subprocess
 import tempfile
+import threading
 import urllib.error
 import urllib.request
 
+from MSHCore.cancellation import (
+    POLL_INTERVAL,
+    CancellationToken,
+    OperationCancelled,
+    log_cancelled,
+)
 from MSHCore.logging import write_log
 
 COMPONENT = "ollama/model"
+
+
+def _run_create(
+    command: list[str],
+    cancellation: CancellationToken,
+) -> tuple[int, str, str]:
+    """Run 'ollama create' as a watched subprocess.
+
+    A buffered capture would leave no point where a cancellation could act,
+    so the process is spawned, its output is read as it is produced, and a
+    watcher thread kills it the moment the token is set.
+
+    Args:
+        command: The command line to run.
+        cancellation: Token that kills the process when set.
+
+    Returns:
+        tuple[int, str, str]: The process's return code, its standard output
+            and its standard error, both stripped.
+
+    Raises:
+        OperationCancelled: If the token is set during the import; the
+            process is killed first, and waits for it to exit.
+    """
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    def kill_on_cancel() -> None:
+        """Kill the process as soon as the token is set."""
+        while True:
+            if cancellation.wait(POLL_INTERVAL):
+                try:
+                    process.kill()
+                except Exception:  # pragma: no cover - already exited
+                    pass
+                return
+
+            if process.poll() is not None:
+                return
+
+    watcher = threading.Thread(
+        target=kill_on_cancel,
+        name="ollama-add-cancel",
+        daemon=True,
+    )
+    watcher.start()
+
+    # The phases only ever move forward. Output arrives on two pipes and
+    # ollama interleaves 'creating layer' with 'writing layer' for every
+    # layer it builds, so later lines regularly name earlier phases — taking
+    # them at face value is what made a finished phase flicker back to
+    # running. A line that names the current phase or an earlier one is
+    # dropped: the panel only hears about forward crossings.
+    phase_index = -1
+
+    def drain(stream, sink: list[str]) -> None:
+        """Read one output stream to the end, appending each line."""
+        buffer = ""
+
+        try:
+            while True:
+                chunk = stream.read(4096)
+
+                if not chunk:
+                    break
+
+                buffer += chunk
+                *lines, buffer = re.split(r"[\r\n]+", buffer)
+
+                for line in lines:
+                    stripped = line.strip()
+
+                    if stripped:
+                        sink.append(stripped)
+
+            stripped = buffer.strip()
+
+            if stripped:
+                sink.append(stripped)
+        finally:
+            stream.close()
+
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+
+    readers = [
+        threading.Thread(target=drain, args=(process.stdout, stdout_lines)),
+        threading.Thread(target=drain, args=(process.stderr, stderr_lines)),
+    ]
+
+    for reader in readers:
+        reader.start()
+
+    return_code = process.wait()
+
+    for reader in readers:
+        reader.join(timeout=5)
+
+    watcher.join(timeout=1)
+
+    cancellation.raise_if_cancelled()
+
+    return (
+        return_code,
+        "\n".join(stdout_lines).strip(),
+        "\n".join(stderr_lines).strip(),
+    )
 
 
 def _run_command(command: list[str]) -> subprocess.CompletedProcess:
@@ -71,12 +194,21 @@ def show_model_info(model: str) -> str:
 def add_model(
     model_name: str,
     model_path: str,
+    cancellation: CancellationToken | None = None,
 ) -> str:
     """Import and register a local GGUF/model file into Ollama.
+
+    The import runs 'ollama create' and blocks until it finishes. There is
+    deliberately no progress reporting: the caller shows a title and a
+    status badge, and the copy is a single disk-bound operation whose
+    completion the return value settles.
 
     Args:
         model_name: Desired model identifier name in Ollama.
         model_path: Local filesystem path to the model file.
+        cancellation: Optional token that kills the import mid-flight. The
+            process is killed, Ollama's partial state is discarded on its
+            side, and nothing is left under the model's name.
 
     Returns:
         str: Ollama CLI output upon successful creation.
@@ -84,11 +216,16 @@ def add_model(
     Raises:
         FileNotFoundError: If the specified model file does not exist.
         RuntimeError: If Ollama fails to create the model.
+        OperationCancelled: If the token is cancelled during the import.
     """
     model_file = Path(model_path).expanduser().resolve()
 
     if not model_file.is_file():
         raise FileNotFoundError(f"Model file not found: {model_file}")
+
+    # One token for the whole import, so a caller without one still gets
+    # uncancellable-by-default behaviour with a single code path.
+    token = cancellation if cancellation is not None else CancellationToken()
 
     with tempfile.TemporaryDirectory() as temp_dir:
         modelfile = Path(temp_dir) / "Modelfile"
@@ -97,15 +234,34 @@ def add_model(
             encoding="utf-8",
         )
 
-        result = _run_command([
-            "ollama",
-            "create",
-            model_name,
-            "-f",
-            str(modelfile),
-        ])
+        try:
+            return_code, stdout, stderr = _run_create(
+                [
+                    "ollama",
+                    "create",
+                    model_name,
+                    "-f",
+                    str(modelfile),
+                ],
+                cancellation=token,
+            )
+        except OperationCancelled:
+            # Killing the process is the whole undo: Ollama discards an
+            # interrupted import, so nothing is left under the model's name
+            # to clean up. The log entry is the only lasting trace.
+            log_cancelled(
+                component=COMPONENT,
+                action="add",
+                message="Model import cancelled",
+                details={
+                    "model": model_name,
+                    "path": str(model_file),
+                    "reason": token.reason,
+                },
+            )
+            raise
 
-    if result.returncode != 0:
+    if return_code != 0:
         write_log(
             level="ERROR",
             component=COMPONENT,
@@ -113,12 +269,10 @@ def add_model(
             message="Failed to add model",
             details={
                 "model": model_name,
-                "error": result.stderr.strip(),
+                "error": stderr,
             },
         )
-        raise RuntimeError(
-            result.stderr.strip() or f"Failed to add model: {model_name}"
-        )
+        raise RuntimeError(stderr or f"Failed to add model: {model_name}")
 
     write_log(
         level="INFO",
@@ -131,7 +285,7 @@ def add_model(
         },
     )
 
-    return result.stdout.strip()
+    return stdout
 
 
 def remove_model(model: str) -> str:
