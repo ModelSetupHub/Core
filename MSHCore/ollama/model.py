@@ -288,6 +288,52 @@ def add_model(
     return stdout
 
 
+def delete_model_file(model_path: str) -> str:
+    """Delete a local GGUF model weights file from disk.
+
+    Only files ending in '.gguf' (case-insensitive) are accepted, so a
+    mistyped path cannot remove anything else on disk. The deletion is
+    permanent: there is no recycle bin and no undo. Deleting the file does
+    not touch Ollama itself — a model already registered from it keeps
+    working, since Ollama copied the weights into its own store; use
+    remove_model to delete that copy.
+
+    Args:
+        model_path: Local filesystem path to the model file.
+
+    Returns:
+        str: The deleted file's absolute path.
+
+    Raises:
+        ValueError: If the path does not end in '.gguf'.
+        FileNotFoundError: If the file does not exist.
+    """
+    model_file = Path(model_path).expanduser().resolve()
+
+    if model_file.suffix.lower() != ".gguf":
+        raise ValueError(f"Not a GGUF file: {model_file}")
+
+    if not model_file.is_file():
+        raise FileNotFoundError(f"Model file not found: {model_file}")
+
+    size_bytes = model_file.stat().st_size
+
+    model_file.unlink()
+
+    write_log(
+        level="WARNING",
+        component=COMPONENT,
+        action="delete",
+        message="Model file deleted",
+        details={
+            "path": str(model_file),
+            "size_bytes": size_bytes,
+        },
+    )
+
+    return str(model_file)
+
+
 def remove_model(model: str) -> str:
     """Delete a model from local Ollama storage.
 
