@@ -203,10 +203,10 @@ def _test_label(test: dict, multi_model: bool) -> str:
 def _distinct_prompts(tests: list) -> list:
     """Collect the distinct prompts a comparison's tests answered.
 
-    A comparison's configurations can carry prompt lists of their own, so
-    the header takes the union across every test in first-seen order rather
-    than the first test's list: a run whose configurations answered
-    different prompts is still recorded as the one run that posed them all.
+    Configurations answer the same shared prompt list, but a run can still
+    reach the store with rows missing or reordered between tests, so the
+    header takes the union across every test in first-seen order rather than
+    the first test's list — the one reading that survives any of that.
 
     Args:
         tests: One test result per comparison step.

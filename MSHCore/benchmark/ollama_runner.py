@@ -684,20 +684,22 @@ def _cleanup_cancelled_test(
 
 def run_benchmark(
     experiments: list[dict],
-    shared_prompts: list[str] | None = None,
+    shared_prompts: list[str],
     include_output: bool = False,
     cancellation: CancellationToken | None = None,
     repetitions: int = 1,
     on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
-    """Benchmark a matrix of models, configurations and prompts.
+    """Benchmark a matrix of models and configurations over shared prompts.
 
     Each experiment names one model and the temporary configurations it runs
-    under, and every configuration answers ``shared_prompts`` — one that
-    carries prompts of its own answers those in addition. Every leaf of the
-    matrix is one :func:`run_test`, so every model-configuration pair is
-    measured the same way: prompts averaged over ``repetitions`` runs, with
-    the run-to-run spread reported beside the means.
+    under, and every configuration answers the same ``shared_prompts``. Every
+    leaf of the matrix is one :func:`run_test`, so every model-configuration
+    pair is measured the same way: prompts averaged over ``repetitions`` runs,
+    with the run-to-run spread reported beside the means. One prompt list for
+    the whole matrix is what makes the numbers comparable — a difference
+    between two configurations then describes the configurations, never the
+    questions.
 
     The two comparisons this module used to offer as separate functions —
     one model under several configurations, and several models under one —
@@ -718,12 +720,9 @@ def run_benchmark(
             Ollama model name or tag, and 'configurations' — optional — is a
             list of dictionaries, defaulting to a single default
             configuration. Each configuration carries an optional 'name'
-            (defaulting to its position), optional 'options' (the generation
-            parameters, defaulting to empty) and optional 'prompts'
-            (defaulting to ``shared_prompts``).
-        shared_prompts: The prompts every configuration runs, before any
-            prompts of its own. Optional when every configuration carries
-            its own.
+            (defaulting to its position) and optional 'options' (the
+            generation parameters, defaulting to empty).
+        shared_prompts: The prompts every configuration runs. Required.
         include_output: Whether to keep generated text in results. Defaults
             to False.
         cancellation: Optional token that stops the comparison part-way.
@@ -748,11 +747,11 @@ def run_benchmark(
         run-to-run noise.
 
     Raises:
-        ValueError: If experiments is empty, an experiment names no model, a
-            configuration ends up with no prompts, or repetitions is not 1 or
-            greater.
-        TypeError: If experiments, a configuration, prompts or repetitions
-            have the wrong types.
+        ValueError: If experiments is empty, an experiment names no model,
+            shared_prompts is empty, or repetitions is not 1 or greater.
+        TypeError: If experiments, a configuration, shared_prompts or
+            repetitions have the wrong types, or a configuration carries a
+            'prompts' key — prompts are shared, not per configuration.
         OperationCancelled: If the token is cancelled. Results collected so
             far are discarded — a cancelled comparison leaves nothing behind
             but its log entry, and no model in memory.
@@ -760,10 +759,14 @@ def run_benchmark(
     if not isinstance(experiments, list) or not experiments:
         raise ValueError("At least one experiment is required")
 
-    if shared_prompts is not None and not isinstance(
-        shared_prompts, (list, tuple)
-    ):
-        raise TypeError("shared_prompts must be a list of strings or None")
+    if not isinstance(shared_prompts, (list, tuple)):
+        raise TypeError("shared_prompts must be a list of strings")
+
+    if not all(isinstance(prompt, str) for prompt in shared_prompts):
+        raise TypeError("shared_prompts must be a list of strings")
+
+    if not shared_prompts:
+        raise ValueError("At least one shared prompt is required")
 
     if not isinstance(include_output, bool):
         raise TypeError("include_output must be a boolean")
@@ -826,27 +829,25 @@ def run_benchmark(
                     f"Configuration '{name}' options must be a dictionary"
                 )
 
-            own_prompts = configuration.get("prompts")
-
-            if own_prompts is not None and not isinstance(
-                own_prompts, (list, tuple)
-            ):
+            # Prompts are shared by design: every configuration answers the
+            # same list, so a gap between two configurations' numbers
+            # describes the configurations and never the questions. A
+            # configuration carrying its own 'prompts' is refused rather
+            # than quietly run over a different prompt set than its
+            # siblings.
+            if "prompts" in configuration:
                 raise TypeError(
-                    f"Configuration '{name}' prompts must be a list of "
-                    f"strings"
+                    f"Configuration '{name}' carries 'prompts', but prompts "
+                    f"are shared across every configuration: pass them as "
+                    f"shared_prompts instead"
                 )
 
-            # The shared prompts run for every configuration; a
-            # configuration with its own adds those after them, so the
-            # common baseline every configuration answers stays aligned
-            # at the front of each run.
-            prompts = list(shared_prompts or []) + list(own_prompts or [])
+            prompts = list(shared_prompts)
 
             if not prompts:
                 raise ValueError(
-                    f"Configuration '{name}' has no prompts to run: it "
-                    f"carries none of its own and the benchmark was given "
-                    f"no shared_prompts"
+                    f"Configuration '{name}' has no prompts to run: the "
+                    f"benchmark was given an empty shared_prompts"
                 )
 
             configurations.append({
