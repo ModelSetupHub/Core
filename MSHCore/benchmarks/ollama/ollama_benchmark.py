@@ -1,4 +1,19 @@
-"""Ollama model benchmarking and multi-configuration experimental testing."""
+"""Shared Ollama benchmark engine — the matrix runner every mode is built on.
+
+The four Benchmark Modes of the WebApp's Benchmark tab are four shapes of one
+matrix: models down one axis, temporary configurations down the other, and a
+single shared prompt list every leaf answers. This module holds that matrix
+runner — :func:`run_benchmark` — together with the primitives it needs (one
+prompt run, the streamed generate call, the statistics and the significance
+verdicts). Each mode lives in its own module beside this one and calls here
+with the experiments that name it; nothing below depends on which mode called.
+
+- ``benchmark_single`` — one model under its defaults: a plain speed test.
+- ``benchmark_configs`` — one model under several configurations.
+- ``benchmark_models`` — several models under one shared configuration.
+- ``benchmark_tournament`` — several models, each racing its own configuration.
+- ``history`` (in the parent package) — persisted runs, shared by every mode.
+"""
 
 from collections.abc import Callable
 import json
@@ -17,7 +32,7 @@ from MSHCore.logging import write_log
 from MSHCore.ollama import model as model_api
 from MSHCore.system.hardware import get_gpu_thermal, get_vram_used
 
-COMPONENT = "benchmark/ollama_runner"
+COMPONENT = "benchmarks/ollama/ollama_benchmark"
 OLLAMA_GENERATE_URL = "http://127.0.0.1:11434/api/generate"
 
 # Per-run metrics averaged across a prompt's repetitions, and the subset whose
@@ -692,6 +707,14 @@ def run_benchmark(
 ) -> dict:
     """Benchmark a matrix of models and configurations over shared prompts.
 
+    This is the shared engine every Benchmark Mode runs on: the modes in this
+    package (:func:`MSHCore.benchmarks.ollama.benchmark_single`,
+    :func:`MSHCore.benchmarks.ollama.benchmark_configs`,
+    :func:`MSHCore.benchmarks.ollama.benchmark_models` and
+    :func:`MSHCore.benchmarks.ollama.benchmark_tournament`) are named shapes of the
+    matrix this function executes, and a caller who needs a shape none of them
+    names may call here directly.
+
     Each experiment names one model and the temporary configurations it runs
     under, and every configuration answers the same ``shared_prompts``. Every
     leaf of the matrix is one :func:`run_test`, so every model-configuration
@@ -700,11 +723,6 @@ def run_benchmark(
     the whole matrix is what makes the numbers comparable — a difference
     between two configurations then describes the configurations, never the
     questions.
-
-    The two comparisons this module used to offer as separate functions —
-    one model under several configurations, and several models under one —
-    are plain shapes of this matrix, built by passing the experiments that
-    name them.
 
     Models are benchmarked one after another, and the model measured before
     is unloaded before the next one loads: two models resident at once would

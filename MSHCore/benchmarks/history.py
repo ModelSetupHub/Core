@@ -320,7 +320,8 @@ def save(result: dict) -> str:
     accident is not something that can happen.
 
     Args:
-        result: A comparison result as produced by :func:`run_benchmark`,
+        result: A comparison result as produced by the benchmark modes (see
+            :func:`MSHCore.benchmarks.ollama.ollama_benchmark.run_benchmark`),
             carrying 'tests' plus either 'model' or a 'models' list, and
             optionally 'significance'.
 
