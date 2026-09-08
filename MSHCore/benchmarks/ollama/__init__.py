@@ -1,8 +1,7 @@
 """Ollama Benchmark Modes — the four shapes of one matrix, plus its engine.
 
-The WebApp's Benchmark tab derives its test kind from the inputs the user
-sets up; the four kinds are the four modes below, each in its own module
-with a function of the same name:
+Each model runtime owns a subpackage of benchmark modes; Ollama's four live
+under ``ollama``, each in its own module with a function of the same name:
 
 - ``benchmark_single`` — one model under its defaults: a plain speed test.
 - ``benchmark_configs`` — one model under several configurations.

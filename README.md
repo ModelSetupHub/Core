@@ -30,14 +30,19 @@ Both front ends include this repository as a git submodule, so a fix made here r
 speeds, installed memory modules, NVIDIA GPUs with their VRAM and CUDA version, and every drive with its capacity and
 free space. This is the figure that decides which models you can realistically load.
 
-**Ollama runtime and models.** Check whether Ollama is installed and running, start and stop the local service, and
-install Ollama itself from an installer. On the model side: list what is installed and what is currently held in memory,
-inspect a model, run a prompt, preload a model, unload it, register a local GGUF file, delete a model, and create a
-configured copy of a model with different parameters — the original is never modified.
+**Ollama runtime and models.** Check whether Ollama is installed and running, start and stop the local service, install
+Ollama itself from an installer, and read Ollama's own log files when something fails and the reason is buried in them.
+On the model side: list what is installed and what is currently held in memory, inspect a model, run a prompt, preload
+a model, unload it, register a local GGUF file, delete a model or its weights file, and create a configured copy of a
+model with different parameters — the original is never modified.
 
-**Benchmarking.** The part most tooling leaves out. Run the same set of prompts through one model under several
-different parameter sets and get back per-prompt timings, token counts and generation rates, plus a summary for each
-configuration. The model is loaded before timing starts, so load time never contaminates the numbers.
+**Benchmarking.** The part most tooling leaves out. The same prompts run through one model or several under one
+configuration or several — four modes cover every combination, including a tournament where each model races its own
+parameter set. Every mode returns per-prompt timings, time-to-first-token, token counts and generation rates, plus VRAM
+and GPU readings, averaged over repetitions with the run-to-run noise reported beside the means. Each comparison ends
+with a significance verdict that says whether the gap between the top two is real or could be coincidence, and finished
+runs are saved into a local benchmark history that can be listed, re-read and deleted. The model is loaded before timing
+starts, so load time never contaminates the numbers.
 
 **Python environments.** Create and remove virtual environments, install and list packages with pip, and write, read,
 edit, delete and run Python scripts — either in the current interpreter or inside a specific environment. There is also
@@ -45,8 +50,9 @@ a helper that installs Python from an official installer on Windows and reports 
 
 **Downloads.** A queue that fetches large files one at a time on a background thread, tracking bytes and transfer speed
 per file. Transfers survive interruption: partial data is kept and continued rather than restarted, and the queue can be
-paused, resumed, skipped past, or cancelled. Downloads are restricted to a fixed list of trusted hosts — Ollama,
-Hugging Face and python.org — and anything else is refused.
+paused, resumed, skipped past, or cancelled. An existing file is never overwritten — a colliding name is saved under a
+numbered variant, so two sources publishing the same filename both arrive. Downloads are restricted to a fixed list of
+trusted hosts — Ollama, Hugging Face and python.org — and anything else is refused.
 
 Two things run underneath all of the above. Every operation appends a structured entry to one execution log, which can
 be read back and filtered afterwards, so there is always a record of what ran and what it did. And the two operations
@@ -74,21 +80,21 @@ For development, install in editable mode with `pip install -e .` instead.
 
 ## Using it
 
-Everything is a plain function call. A hardware scan, then a benchmark against a model served by Ollama:
+Everything is a plain function call. A hardware scan, then a speed measurement against a model served by Ollama:
 
 ```python
 from MSHCore.system.scanner import scan_system
-from MSHCore.benchmark import ollama_runner
+from MSHCore.benchmarks.ollama import benchmark_single
 
 profile = scan_system()
 print(profile["cpu"]["model"], profile["memory"]["total_gb"], "GB")
 
-result = ollama_runner.run_test(
+result = benchmark_single(
     model="llama3",
     prompts=["Summarize the solar system."],
-    config={"temperature": 0.7, "num_ctx": 4096},
 )
-print(result["summary"]["average_output_tokens_per_second"], "tokens/sec")
+test = result["tests"][0]
+print(test["summary"]["average_output_tokens_per_second"], "tokens/sec")
 ```
 
 Or a Python-based model, with no Ollama involved at all — fetch the weights, prepare an environment, and run it:
@@ -107,16 +113,18 @@ tools.install_packages(["ultralytics"], environment=env)
 print(tools.run_script("scripts/detect.py", environment=env))
 ```
 
-The five areas live in `MSHCore.system`, `MSHCore.ollama`, `MSHCore.python`, `MSHCore.download_manager` and
-`MSHCore.logging`; each module's functions are documented in their docstrings.
+The working modules are grouped into six packages — `MSHCore.system`, `MSHCore.ollama`, `MSHCore.benchmarks`,
+`MSHCore.python`, `MSHCore.download_manager` and `MSHCore.logging` — and every function's behaviour is documented in its
+docstring.
 
 ## Good to know
 
 - **There is no configuration file and no environment variable to set.** Behaviour is decided by the arguments you pass.
-- **Nothing is stored between runs** apart from the execution log. A download queue lives in memory only, and a
-  cancelled queue cannot be restarted — you create a new one.
-- **Deleting a model is not recoverable.** Neither is cancelling a download queue, which removes the files that queue
-  produced.
+- **Three things live on disk, all under `%LOCALAPPDATA%\MSH`:** the execution log, saved benchmark runs and completed
+  downloads. Everything else — a download queue, its progress, a comparison in flight — is memory only, and a cancelled
+  session cannot be restarted: you create a new one.
+- **Deleting a model is not recoverable.** Neither is cancelling a download queue with cleanup on, which removes the
+  files that queue produced.
 - **Only downloads and benchmarks can be cancelled mid-flight.** Installers and scans run to completion.
 
 ## Status and licence

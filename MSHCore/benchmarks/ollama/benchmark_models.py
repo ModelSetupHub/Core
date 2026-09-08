@@ -1,11 +1,9 @@
 """Benchmark Mode 'models' — compare several models under one configuration.
 
-The WebApp's Benchmark tab derives its test kind from what the user has set
-up; with several models ticked and no more than one configuration, the plan
-is the model comparison (i18n key ``bench.plan.models``, "Model comparison").
-This module is that mode: every model answers the same prompts under the
-same shared configuration, each model unloaded before the next loads so
-their timings never compete for VRAM.
+With several models and no more than one configuration, the plan is the
+model comparison. This module is that mode: every model answers the same
+prompts under the same shared configuration, each model unloaded before the
+next loads so their timings never compete for VRAM.
 
 The matrix execution itself — streaming, cancellation, averaging, the
 significance verdicts — is the shared engine's

@@ -1,18 +1,13 @@
 """Shared Ollama benchmark engine — the matrix runner every mode is built on.
 
-The four Benchmark Modes of the WebApp's Benchmark tab are four shapes of one
-matrix: models down one axis, temporary configurations down the other, and a
-single shared prompt list every leaf answers. This module holds that matrix
-runner — :func:`run_benchmark` — together with the primitives it needs (one
-prompt run, the streamed generate call, the statistics and the significance
-verdicts). Each mode lives in its own module beside this one and calls here
-with the experiments that name it; nothing below depends on which mode called.
-
-- ``benchmark_single`` — one model under its defaults: a plain speed test.
-- ``benchmark_configs`` — one model under several configurations.
-- ``benchmark_models`` — several models under one shared configuration.
-- ``benchmark_tournament`` — several models, each racing its own configuration.
-- ``history`` (in the parent package) — persisted runs, shared by every mode.
+A benchmark is one matrix: models down one axis, temporary configurations
+down the other, and a single shared prompt list every leaf answers. This
+module holds that matrix runner — :func:`run_benchmark` — together with the
+primitives it needs (one prompt run, the streamed generate call, the
+statistics and the significance verdicts). The four modes in this package
+(:mod:`MSHCore.benchmarks.ollama`) are named shapes of the matrix, each
+calling here with the experiments that name it; nothing below depends on
+which mode called. The persisted run history is :mod:`MSHCore.benchmarks.history`.
 """
 
 from collections.abc import Callable
@@ -310,8 +305,8 @@ def run_test(
 
     Each prompt runs ``repetitions`` times and the per-prompt result averages
     those runs, with the spread of the timing and rate metrics reported along
-    the means. The default of one repetition reproduces exactly the behaviour
-    this function had before averaging existed.
+    the means. With the default of one repetition the result is that single
+    run's own numbers.
 
     Alongside the timing metrics, measurements are reported as taken: the time
     to the answer's first streamed token, the VRAM the driver reported right
@@ -707,13 +702,9 @@ def run_benchmark(
 ) -> dict:
     """Benchmark a matrix of models and configurations over shared prompts.
 
-    This is the shared engine every Benchmark Mode runs on: the modes in this
-    package (:func:`MSHCore.benchmarks.ollama.benchmark_single`,
-    :func:`MSHCore.benchmarks.ollama.benchmark_configs`,
-    :func:`MSHCore.benchmarks.ollama.benchmark_models` and
-    :func:`MSHCore.benchmarks.ollama.benchmark_tournament`) are named shapes of the
-    matrix this function executes, and a caller who needs a shape none of them
-    names may call here directly.
+    This is the shared engine the four modes in this package run on
+    (:mod:`MSHCore.benchmarks.ollama`); a caller who needs a shape none of
+    them names may call here directly.
 
     Each experiment names one model and the temporary configurations it runs
     under, and every configuration answers the same ``shared_prompts``. Every

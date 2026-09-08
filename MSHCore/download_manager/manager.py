@@ -56,15 +56,11 @@ class SessionCancelled(RuntimeError):
 class DownloadManager:
     """Sequential download manager handling queueing, speed, and workers.
 
-    The manager handles:
-        - Download queue
-        - Progress tracking and speed calculation
-        - Automatic retry
-        - Pause / Resume
-        - Skip
-        - Cancellation
-        - Optional Windows keyboard shortcut listener
-        - Event logging
+    One session downloads its queue one file at a time on a background
+    thread, tracking per-file bytes and transfer speed, retrying failures,
+    and supporting pause, resume, skip and cancellation. On Windows a
+    terminal session also offers single-key controls, and every state change
+    is written to the execution log.
     """
 
     def __init__(
@@ -135,18 +131,15 @@ class DownloadManager:
         Delegates to
         :func:`MSHCore.download_manager.sources.verify_download_source`, which
         the downloader also calls, so queueing and transferring accept exactly
-        the same URLs. The host is taken from ``urlparse(...).hostname``, so a
-        port or a ``user@`` prefix cannot disguise a foreign host, and Hugging
-        Face's CDN subdomains are accepted because a download link redirects
-        onto one.
+        the same URLs.
 
         Args:
             url: URL string to validate.
 
         Raises:
             DownloadSourceRejected: If the scheme is not http or https, or the
-                domain is not allowed. A ``PermissionError``, as before, whose
-                message names the rejected domain and lists the allowed ones.
+                domain is not allowed. A ``PermissionError`` whose message
+                names the rejected domain and lists the allowed ones.
         """
         verify_download_source(url)
 
@@ -157,11 +150,10 @@ class DownloadManager:
     ) -> str:
         """Return a filename that is free in the download directory.
 
-        Two repositories publishing ``model.safetensors`` used to collide: the
-        second file found the first already on disk and was reported completed
-        without being fetched. Rather than refuse the queue, the second is given
-        a numbered name — ``model-1.safetensors``, then ``model-2.safetensors``
-        — so both files arrive and neither is overwritten. Names already claimed
+        Two repositories publishing ``model.safetensors`` must both arrive:
+        when the requested name is taken the file is saved under a numbered
+        variant — ``model-1.safetensors``, then ``model-2.safetensors`` — so
+        neither is overwritten and neither is skipped. Names already claimed
         by another item in this queue count as taken too, since that file has
         not been written yet.
 
@@ -276,12 +268,12 @@ class DownloadManager:
         """Add a file URL to the sequential download queue.
 
         The destination name is disambiguated when something already holds it —
-        a file or partial file on disk, or an earlier item in this queue — so two
-        repositories' ``model.safetensors`` become ``model.safetensors`` and
-        ``model-1.safetensors`` and both are actually downloaded. The name the
-        file will be saved under is recorded on the queue item and reported by
-        :meth:`get_status`; ``requested_filename`` carries the original when they
-        differ.
+        a file or partial file on disk, or an earlier item in this queue — so
+        two repositories' ``model.safetensors`` are saved as
+        ``model.safetensors`` and ``model-1.safetensors`` and both are actually
+        downloaded. The name the file will be saved under is recorded on the
+        queue item and reported by :meth:`get_status`;
+        ``requested_filename`` carries the original when they differ.
 
         Args:
             url: Remote file HTTP/HTTPS URL.
@@ -466,8 +458,9 @@ class DownloadManager:
         """Report whether this process has a console to read keys from.
 
         The listener exists for a user running the manager from a terminal.
-        Under a server — where stdin is a pipe carrying the protocol — reading
-        keys would consume that stream, so the listener is not started at all.
+        When stdin is a pipe carrying data rather than a console — a server,
+        an embedded caller — reading keys would consume that stream, so the
+        listener is not started at all.
 
         Returns:
             bool: True when stdin is an interactive console.
@@ -1065,7 +1058,9 @@ class DownloadManager:
         the queue is abandoned. With ``cleanup`` left on, everything the
         session produced is then removed — partial files, and completed files
         too — so a cancelled download leaves nothing behind but its log entry.
-        Pass ``cleanup=False`` to keep what had already finished.
+        Pass ``cleanup=False`` to keep what had already finished; a queue that
+        ran to completion delivers its files either way, since cancelling it
+        has nothing to undo.
 
         Either way the session is closed: its queue is emptied and it will not
         accept another file or another start, because the work it was tracking

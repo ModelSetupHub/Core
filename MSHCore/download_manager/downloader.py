@@ -23,7 +23,7 @@ class DownloadConflict(DownloadError):
     same file name — ``model.safetensors`` is the usual one — so accepting the
     existing file would report a download that never happened and leave the
     wrong bytes under the requested name. The caller chooses a free name and
-    queues it again; ``DownloadManager`` does that automatically.
+    tries again; ``DownloadManager`` does that automatically.
 
     A subclass of :class:`DownloadError` so a caller that already handles a
     failed download handles this too, and it is deliberately not retried: the
@@ -42,15 +42,11 @@ class DownloadSkipped(Exception):
 class Downloader:
     """Reliable resumable HTTP/HTTPS downloader.
 
-    Responsibilities:
-        - Connect to remote server
-        - Download a single file
-        - Resume interrupted downloads
-        - Retry failed connections
-        - Report progress
-        - Support pause/resume
-        - Support cancellation
-        - Support skipping
+    One instance transfers one file: it connects, streams the body into a
+    partial file, resumes an interrupted transfer from its partial data,
+    retries failed attempts, reports progress, and can be paused, resumed,
+    skipped or cancelled while it runs. The queue that sequences several
+    downloads lives in :class:`MSHCore.download_manager.manager.DownloadManager`.
     """
 
     def __init__(
@@ -93,14 +89,12 @@ class Downloader:
         """Validate that the target URL scheme and host are allowed.
 
         Delegates to :func:`MSHCore.download_manager.sources.verify_download_source`
-        so this check and the manager's are the same comparison: the host comes
-        from ``urlparse(...).hostname`` — no port, no userinfo — the scheme must
-        be http or https, and Hugging Face's CDN subdomains are accepted.
+        so this check and the manager's are the same comparison.
 
         Raises:
             DownloadSourceRejected: If the scheme or the domain is not allowed.
-                A ``PermissionError``, as before, whose message names the
-                rejected domain and lists the allowed ones.
+                A ``PermissionError`` whose message names the rejected domain
+                and lists the allowed ones.
         """
         verify_download_source(self.url)
 
@@ -178,9 +172,8 @@ class Downloader:
         )
 
         # A file already at the destination is a conflict, not a completed
-        # download. Reporting "completed" here was silently standing in for a
-        # transfer that never ran, so a second repository's model.safetensors
-        # resolved to the first one's bytes.
+        # download: reporting "completed" here would silently stand in for a
+        # transfer that never ran.
         if self.destination.exists():
             existing_size = self.destination.stat().st_size
 

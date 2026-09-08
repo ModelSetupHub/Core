@@ -26,9 +26,9 @@ def run_command(command: list[str], timeout: int = 5) -> str | None:
             text=True,
             timeout=timeout,
             check=False,
-            # This process may be an MCP server whose stdin carries the JSON-RPC
-            # stream. PowerShell in particular reads stdin when it has one, so a
-            # child inheriting it would consume the protocol's bytes.
+            # This process's own stdin may carry a stream the caller depends
+            # on, and PowerShell in particular reads stdin when it has one, so
+            # a child inheriting it would consume those bytes.
             stdin=subprocess.DEVNULL,
         )
         if result.returncode == 0:

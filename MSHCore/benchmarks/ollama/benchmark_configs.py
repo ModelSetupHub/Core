@@ -1,11 +1,9 @@
 """Benchmark Mode 'configs' — compare configurations of one model.
 
-The WebApp's Benchmark tab derives its test kind from what the user has set
-up; with exactly one model ticked and several configurations built, the plan
-is the configuration test (i18n key ``bench.plan.configs``, "Configuration
-test"). This module is that mode: one model answers the same prompts under
-each temporary configuration, and the result ranks the configurations by
-their own run-to-run noise.
+With one model and several configurations built, the plan is the
+configuration test. This module is that mode: one model answers the same
+prompts under each temporary configuration, and the result ranks the
+configurations by their own run-to-run noise.
 
 The configurations are applied per request and create nothing on disk; the
 matrix execution itself — streaming, cancellation, averaging, the

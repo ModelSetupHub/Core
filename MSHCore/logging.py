@@ -10,16 +10,10 @@ from MSHCore.paths import LOG_FILE_NAME, ensure_directory, logs_directory
 def _log_file_path() -> Path:
     """Return the execution log's path, creating its directory when missing.
 
-    Kept separate from ``get_log_file_info`` so that appending a single entry
-    does not have to read the whole log: ``write_log`` runs on every logged
-    event and needs nothing but the path.
-
-    The directory is ``%LOCALAPPDATA%\\MSH\\logs``, created with its parents on
-    first use. It is under the user's own profile rather than a machine-wide
-    location, so writing the log never depends on the process being elevated.
-
-    Returns:
-        Path: Absolute path to the execution log file.
+    Kept separate from ``get_log_file_info`` so appending a single entry does
+    not have to read the whole log: ``write_log`` runs on every logged event
+    and needs nothing but the path. The directory,
+    ``%LOCALAPPDATA%\\MSH\\logs``, is created with its parents on first use.
     """
     return ensure_directory(logs_directory()) / LOG_FILE_NAME
 
@@ -27,19 +21,11 @@ def _log_file_path() -> Path:
 def get_log_file_info() -> dict:
     """Describe the execution log file: where it is and how much it holds.
 
-    The log file is stored under the application data directory::
-
-        %LOCALAPPDATA%\\MSH\\
-        ├── downloads/
-        ├── benchmarks/
-        ├── progress/
-        └── logs/
-            └── executions.log
-
-    Creates the logs directory, and its parents, if they do not already exist.
-    A log that has never been written to is reported at zero lines and zero
-    bytes rather than treated as an error, so this can be called before the
-    first event.
+    The log lives at ``%LOCALAPPDATA%\\MSH\\logs\\executions.log`` (see
+    :mod:`MSHCore.paths`). Creates the logs directory, and its parents, if
+    they do not already exist. A log that has never been written to is
+    reported at zero lines and zero bytes rather than treated as an error, so
+    this can be called before the first event.
 
     Returns:
         dict: Mapping with 'path' as the absolute ``Path`` to the log file,

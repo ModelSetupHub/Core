@@ -1,16 +1,14 @@
 """Benchmark Mode 'single' — measure one model's speed.
 
-The WebApp's Benchmark tab derives its test kind from what the user has set
-up; with exactly one model ticked and no more than one configuration, the
-plan is the plain speed test (i18n key ``bench.plan.single``, "Model speed
-test"). This module is that mode: the model answers every prompt once under
-its own defaults, and the result carries the timings, rates and GPU readings
-of that single run.
+With exactly one model and no more than one configuration, the plan is the
+plain speed test. This module is that mode: the model answers every prompt
+once under its own defaults, and the result carries the timings, rates and
+GPU readings of that single run.
 
 Everything hard about a benchmark — streaming, cancellation, averaging, the
 significance verdicts — lives in the shared engine
-(:func:`MSHCore.benchmarks.ollama.ollama_benchmark.run_benchmark`); this file only
-names the matrix shape the mode stands for.
+(:func:`MSHCore.benchmarks.ollama.ollama_benchmark.run_benchmark`); this file
+only names the matrix shape the mode stands for.
 """
 
 from collections.abc import Callable
@@ -46,8 +44,7 @@ def benchmark_single(
     Returns:
         dict: The comparison result for the single model-configuration pair
         — 'experiments', 'models', 'tests' (one entry) and 'significance'.
-        A caller showing one test's numbers unwraps ``tests[0]`` itself, the
-        way the WebApp's results page does.
+        A caller showing one test's numbers unwraps ``tests[0]`` itself.
 
     Raises:
         ValueError: If the model name is empty or there are no prompts.

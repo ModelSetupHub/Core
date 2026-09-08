@@ -1,17 +1,14 @@
 """Benchmark Mode 'tournament' — each model races its own configuration.
 
-The WebApp's Benchmark tab derives its test kind from what the user has set
-up; with several models ticked and several configurations built, the plan is
-the tournament (i18n key ``bench.plan.tournament``, "Tournament"): each model
-races under the configuration paired with it rather than a single shared
-one. This module is that mode.
+With several models and several configurations built, the plan is the
+tournament: each model races under the configuration paired with it rather
+than a single shared one. This module is that mode.
 
 The pairing arrives as ``model_configs`` — a dictionary keyed by model name,
-exactly the payload the WebApp sends. A model named there runs under its own
-options; a model missing from it falls back to the shared ``config``, which
-reproduces the WebApp's positional fallback (an unpaired model takes the
-configuration at its own position). The matrix execution itself — streaming,
-cancellation, averaging, the significance verdicts — is the shared engine's
+each value that model's generation options. A model named there runs under
+its own options; a model missing from it falls back to the shared
+``config``. The matrix execution itself — streaming, cancellation,
+averaging, the significance verdicts — is the shared engine's
 (:func:`MSHCore.benchmarks.ollama.ollama_benchmark.run_benchmark`).
 """
 

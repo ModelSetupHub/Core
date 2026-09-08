@@ -2,10 +2,8 @@
 
 A comparison run is the unit of history: the models that were benchmarked,
 the prompts their configurations answered, and one result per
-model-configuration pair. The pieces belong together — a configuration's
-numbers only mean something against the others it was compared with — so a
-run is stored whole in a single file rather than split per configuration or
-per model.
+model-configuration pair, stored whole because a configuration's numbers
+only mean something against the others it was compared with.
 
 The store is runner-agnostic: it validates only the shape of what arrives —
 what was benchmarked, and at least one test — and never talks to a model
@@ -19,15 +17,9 @@ Layout under the toolkit's data root (see :mod:`MSHCore.paths`)::
         └── 20260905T211530_a1b2c3.json the full result of one run
 
 The file name carries the save time, so a plain directory listing is already
-chronological. Each file holds the comparison result exactly as the caller
-produced it — per-prompt timings, noise spreads, the significance assessment —
-under an added header identifying what was compared. Nothing is recomputed or
-judged at save time; the store only records and serves what it was given.
-
-The index exists so listing runs never opens the result files: one record per
-run with the identity fields a list shows (model, time, winner, noise
-verdict), kept in the same write as the result so the two cannot disagree.
-A run dropped from the index is dropped from disk with it.
+chronological. The index exists so listing runs never opens the result
+files; it is written in the same operation as the result so the two cannot
+disagree, and a run dropped from the index is dropped from disk with it.
 """
 
 from __future__ import annotations
@@ -316,8 +308,7 @@ def save(result: dict) -> str:
     single-model comparison carries its model under 'model'; a cross-model
     one names what it measured under 'models', and both are accepted. Two
     runs saved in the same second are told apart by a short random suffix,
-    so an identifier is never reused and overwriting an older run by
-    accident is not something that can happen.
+    so an identifier is never reused.
 
     Args:
         result: A comparison result as produced by the benchmark modes (see
@@ -522,8 +513,7 @@ def delete(benchmark_id: str) -> bool:
 
     Returns:
         bool: True when a run was removed, False when nothing was stored
-        under that identifier — removing a missing run is the state the
-        caller asked for, not a failure.
+        under that identifier — removing a missing run is not a failure.
 
     Raises:
         ValueError: If the identifier is not a plain id.

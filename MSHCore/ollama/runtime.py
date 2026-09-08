@@ -86,8 +86,8 @@ def _get_version() -> str | None:
             text=True,
             check=False,
             timeout=5,
-            # This process may be an MCP server whose stdin carries the JSON-RPC
-            # stream, and a child inheriting it could read the protocol's bytes.
+            # This process's own stdin may carry a stream the caller depends
+            # on, and a child inheriting it could read those bytes.
             stdin=subprocess.DEVNULL,
         )
     except (
@@ -466,7 +466,8 @@ def install(
             errors="replace",
             check=False,
             # An installer that decides to prompt must not read this process's
-            # stdin: under an MCP server that stream is the JSON-RPC transport.
+            # stdin: that stream may belong to the caller, not to the
+            # installer.
             stdin=subprocess.DEVNULL,
         )
     except Exception as error:

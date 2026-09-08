@@ -44,9 +44,8 @@ def install_packages(
         encoding="utf-8",
         errors="replace",
         check=False,
-        # This process may be an MCP server whose stdin carries the JSON-RPC
-        # stream. A child inheriting it could read the protocol's bytes, so every
-        # child here is given an empty stdin instead.
+        # This process's own stdin may carry a stream the caller depends on,
+        # so every child here is given an empty stdin instead.
         stdin=subprocess.DEVNULL,
     )
 

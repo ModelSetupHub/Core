@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 ALLOWED_SCHEMES = frozenset({"http", "https"})
 
 # Hosts accepted by exact match, compared lowercased and without a trailing dot.
+# Both the bare and the "www." form are listed rather than special-cased.
 ALLOWED_DOMAINS = {
     "ollama.com",
     "www.ollama.com",
@@ -40,10 +41,9 @@ ALLOWED_DOMAIN_SUFFIXES = frozenset({"huggingface.co", "hf.co"})
 class DownloadSourceRejected(PermissionError):
     """Raised when a URL's scheme or host is not on the whitelist.
 
-    A ``PermissionError`` subclass, which is what both validation points
-    documented and raised before this class existed, so anything catching that
-    still catches this. The message always names what was rejected and lists
-    every accepted host, since a caller that guessed a domain wrong has no other
+    A ``PermissionError`` subclass, so a caller catching that type catches
+    this too. The message always names what was rejected and lists every
+    accepted host, since a caller that guessed a domain wrong has no other
     way to learn which ones are allowed.
     """
 

@@ -61,8 +61,8 @@ def install_python(
         errors="replace",
         check=False,
         # The installer runs quietly, but an installer that decides to prompt
-        # must not read this process's stdin: under an MCP server that stream is
-        # the JSON-RPC transport.
+        # must not read this process's stdin: that stream may belong to the
+        # caller, not to the installer.
         stdin=subprocess.DEVNULL,
     )
 

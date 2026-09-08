@@ -15,7 +15,7 @@ drift apart, and so a caller that wants to know where something landed reads
 the same constant the writer used.
 
 The root is deliberately per-user rather than machine-wide: ``%LOCALAPPDATA%``
-is writable without elevation, so nothing here depends on the server having
+is writable without elevation, so nothing here depends on the process having
 been started as an administrator. On a platform with no ``%LOCALAPPDATA%`` the
 root is ``~/.msh``.
 """
@@ -32,7 +32,7 @@ def app_data_directory() -> Path:
     """Return the root directory everything the toolkit stores lives under.
 
     Resolved on each call rather than at import, so a process that adjusts
-    ``%LOCALAPPDATA%`` — a test harness, or a service running under a different
+    ``%LOCALAPPDATA%`` — a test harness, or one running under a different
     profile — is not left writing to the profile that happened to be current
     when the module was first imported.
 
@@ -68,8 +68,8 @@ def logs_directory() -> Path:
     return app_data_directory() / "logs"
 
 
-# Resolved once for callers that want the default as a plain value — a function
-# signature's default, or a tool schema. Prefer the functions above anywhere the
+# Resolved once for callers that want the default as a plain value, such as a
+# function signature's default. Prefer the functions above anywhere the
 # directory is about to be written to.
 APP_DATA_DIRECTORY = app_data_directory()
 DOWNLOADS_DIRECTORY = downloads_directory()

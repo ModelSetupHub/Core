@@ -105,9 +105,9 @@ def log_cancelled(
 ) -> None:
     """Record that an operation was cancelled.
 
-    Cancelling is meant to leave nothing behind except this entry, so every
-    operation calls it on the way out — that log line is the only lasting
-    trace a cancelled operation is allowed to leave.
+    Cancelling leaves nothing behind except this entry, so every operation
+    calls it on the way out — that log line is the only lasting trace a
+    cancelled operation is allowed to leave.
 
     Args:
         component: Component the operation belongs to.

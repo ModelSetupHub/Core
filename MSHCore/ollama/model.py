@@ -73,14 +73,8 @@ def _run_create(
     )
     watcher.start()
 
-    # The phases only ever move forward. Output arrives on two pipes and
-    # ollama interleaves 'creating layer' with 'writing layer' for every
-    # layer it builds, so later lines regularly name earlier phases — taking
-    # them at face value is what made a finished phase flicker back to
-    # running. A line that names the current phase or an earlier one is
-    # dropped: the panel only hears about forward crossings.
-    phase_index = -1
-
+    # Output arrives on two pipes; each is drained on its own thread so a
+    # blocked stream cannot stall the other or the process itself.
     def drain(stream, sink: list[str]) -> None:
         """Read one output stream to the end, appending each line."""
         buffer = ""
@@ -151,9 +145,9 @@ def _run_command(command: list[str]) -> subprocess.CompletedProcess:
         encoding="utf-8",
         errors="replace",
         check=False,
-        # This process may be an MCP server whose stdin carries the JSON-RPC
-        # stream. `ollama run` in particular reads stdin for an interactive
-        # session, so a child inheriting it would consume the protocol's bytes.
+        # This process's own stdin may carry a stream the caller depends on,
+        # and `ollama run` in particular reads stdin for an interactive
+        # session, so a child inheriting it would consume those bytes.
         stdin=subprocess.DEVNULL,
     )
 
@@ -199,9 +193,8 @@ def add_model(
     """Import and register a local GGUF/model file into Ollama.
 
     The import runs 'ollama create' and blocks until it finishes. There is
-    deliberately no progress reporting: the caller shows a title and a
-    status badge, and the copy is a single disk-bound operation whose
-    completion the return value settles.
+    deliberately no progress reporting: the copy is a single disk-bound
+    operation whose completion the return value settles.
 
     Args:
         model_name: Desired model identifier name in Ollama.
