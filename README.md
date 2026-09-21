@@ -28,10 +28,14 @@ Both front ends include this repository as a git submodule, so a fix made here r
 
 **Hardware discovery.** One call returns a full profile of the machine: operating system, processor model and clock
 speeds, installed memory modules, NVIDIA GPUs with their VRAM and CUDA version, and every drive with its capacity and
-free space. This is the figure that decides which models you can realistically load.
+free space. This is the figure that decides which models you can realistically load. Cross-platform system detection
+means each figure is read in the terms its platform reports it — WMI through PowerShell on Windows, `os-release`,
+`/proc/cpuinfo`, `lscpu` and `dmidecode` on Linux — and returned in one shape either way.
 
 **Ollama runtime and models.** Check whether Ollama is installed and running, start and stop the local service, install
 Ollama itself from an installer, and read Ollama's own log files when something fails and the reason is buried in them.
+Multi-platform command execution covers the process work: the service is started and stopped with the platform's own
+tool, and the installer is run the way that platform expects it — an executable on Windows, a shell script on Linux.
 On the model side: list what is installed and what is currently held in memory, inspect a model, run a prompt, preload
 a model, unload it, register a local GGUF file, delete a model or its weights file, and create a configured copy of a
 model with different parameters — the original is never modified.
@@ -46,13 +50,15 @@ starts, so load time never contaminates the numbers.
 
 **Python environments.** Create and remove virtual environments, install and list packages with pip, and write, read,
 edit, delete and run Python scripts — either in the current interpreter or inside a specific environment. There is also
-a helper that installs Python from an official installer on Windows and reports which versions are already present.
+a helper that installs Python from an official installer and reports which versions are already present, reading the
+registry on Windows and the interpreters on PATH on Linux.
 
 **Downloads.** A queue that fetches large files one at a time on a background thread, tracking bytes and transfer speed
 per file. Transfers survive interruption: partial data is kept and continued rather than restarted, and the queue can be
 paused, resumed, skipped past, or cancelled. An existing file is never overwritten — a colliding name is saved under a
 numbered variant, so two sources publishing the same filename both arrive. Downloads are restricted to a fixed list of
-trusted hosts — Ollama, Hugging Face and python.org — and anything else is refused.
+trusted hosts — Ollama, Hugging Face and python.org — and anything else is refused. In an interactive terminal the queue
+also takes single-key controls — `p`, `s`, `c` and `q` — on Windows and Linux alike.
 
 Two things run underneath all of the above. Every operation appends a structured entry to one execution log, which can
 be read back and filtered afterwards, so there is always a record of what ran and what it did. And the two operations
@@ -62,8 +68,12 @@ point and undo what they created rather than leaving half-finished work behind.
 ## Requirements
 
 - Python 3.10 or newer
-- Windows for the full feature set. Hardware detection relies on PowerShell and WMI, and GPU detection on `nvidia-smi`,
-  so results are thinner on other platforms and AMD or Intel GPUs are not reported.
+- Windows or Linux
+
+Cross-platform system detection reads what each platform exposes: WMI through PowerShell on Windows, and `os-release`,
+`/proc/cpuinfo`, `lscpu` and `dmidecode` on Linux. Memory-module details on Linux come from the SMBIOS tables, which
+`dmidecode` needs root to read; without that the rest of the profile is still reported. GPU detection uses `nvidia-smi`
+on both platforms, so AMD and Intel GPUs are not reported.
 
 The one third-party dependency, `psutil`, is declared in `pyproject.toml` and installs automatically. It is also listed
 in `requirements.txt` for anyone who wants the dependencies without the package.
@@ -103,7 +113,8 @@ Or a Python-based model, with no Ollama involved at all — fetch the weights, p
 from MSHCore.download_manager import DownloadManager
 from MSHCore.python import environment, tools
 
-manager = DownloadManager()  # defaults to %LOCALAPPDATA%\MSH\downloads
+manager = DownloadManager()  # %LOCALAPPDATA%\MSH\downloads (Windows),
+                            # ~/.msh/downloads (Linux)
 manager.add("https://huggingface.co/Ultralytics/YOLOv8/resolve/main/yolov8n.pt")
 manager.start()
 manager.wait()
@@ -120,9 +131,9 @@ docstring.
 ## Good to know
 
 - **There is no configuration file and no environment variable to set.** Behaviour is decided by the arguments you pass.
-- **Three things live on disk, all under `%LOCALAPPDATA%\MSH`:** the execution log, saved benchmark runs and completed
-  downloads. Everything else — a download queue, its progress, a comparison in flight — is memory only, and a cancelled
-  session cannot be restarted: you create a new one.
+- **Three things live on disk, all under the application data root** — `%LOCALAPPDATA%\MSH` on Windows, `~/.msh` on
+  Linux: the execution log, saved benchmark runs and completed downloads. Everything else — a download queue, its
+  progress, a comparison in flight — is memory only, and a cancelled session cannot be restarted: you create a new one.
 - **Deleting a model is not recoverable.** Neither is cancelling a download queue with cleanup on, which removes the
   files that queue produced.
 - **Only downloads and benchmarks can be cancelled mid-flight.** Installers and scans run to completion.

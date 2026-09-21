@@ -65,8 +65,59 @@ def format_gb(value: int | float) -> str:
     return f"{bytes_to_gb(value):.1f} GB"
 
 
+def _linux_os_release(field: str) -> str | None:
+    """Read one field from the Linux ``os-release`` file.
+
+    Args:
+        field: Variable name to look up, such as 'PRETTY_NAME'.
+
+    Returns:
+        str | None: The value with its quotes stripped, or None when neither
+        the file nor the field is present.
+    """
+    for path in ("/etc/os-release", "/usr/lib/os-release"):
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                for line in file:
+                    name, separator, value = line.partition("=")
+
+                    if separator and name.strip() == field:
+                        return value.strip().strip('"') or None
+        except OSError:
+            continue
+
+    return None
+
+
+def _proc_cpuinfo(field: str) -> str | None:
+    """Read one per-processor field from ``/proc/cpuinfo``.
+
+    Args:
+        field: Field name as the kernel prints it, such as 'model name'.
+
+    Returns:
+        str | None: The first value found, or None when the file cannot be
+        read or the field is absent.
+    """
+    try:
+        with open("/proc/cpuinfo", "r", encoding="utf-8") as file:
+            for line in file:
+                name, separator, value = line.partition(":")
+
+                if separator and name.strip().lower() == field.lower():
+                    return value.strip() or None
+    except OSError:
+        pass
+
+    return None
+
+
 def get_system_info() -> dict:
     """Get operating system identification and version details.
+
+    Each platform is asked in its own terms: WMI through PowerShell on
+    Windows, and the distribution's ``os-release`` file with the kernel
+    release on Linux.
 
     Returns:
         dict: Dictionary containing OS name, version, build number,
@@ -105,6 +156,20 @@ def get_system_info() -> dict:
             "python": platform.python_version(),
         }
 
+    if system_name == "Linux":
+        distribution = (
+            _linux_os_release("PRETTY_NAME") or _linux_os_release("NAME")
+        )
+
+        return {
+            "name": distribution or "Linux",
+            "version": _linux_os_release("VERSION_ID") or platform.release(),
+            # The kernel release, which is the build number's counterpart.
+            "build": platform.release(),
+            "architecture": platform.machine(),
+            "python": platform.python_version(),
+        }
+
     return {
         "name": system_name,
         "version": platform.release(),
@@ -117,17 +182,47 @@ def get_system_info() -> dict:
 def get_cpu_info() -> dict:
     """Get detailed CPU hardware and clock frequency information.
 
+    The processor model and its rated clock are read through WMI on Windows
+    and from ``lscpu`` and ``/proc/cpuinfo`` on Linux.
+
     Returns:
         dict: Dictionary containing CPU model name, architecture, physical core
             count, logical thread count, reported clock speed, current
             frequency, and max frequency.
     """
-    cpu_name = run_command([
-        "powershell",
-        "-NoProfile",
-        "-Command",
-        "(Get-CimInstance Win32_Processor).Name",
-    ])
+    cpu_name = None
+    reported_clock = None
+
+    if platform.system() == "Windows":
+        cpu_name = run_command([
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "(Get-CimInstance Win32_Processor).Name",
+        ])
+
+        reported_clock = run_command([
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "(Get-CimInstance Win32_Processor).MaxClockSpeed",
+        ])
+
+    elif platform.system() == "Linux":
+        cpu_name = _proc_cpuinfo("model name")
+
+        # lscpu's parsable output is numeric and locale-independent, which the
+        # human-readable table is not; /proc/cpuinfo's own clock figure is the
+        # fallback when util-linux is not installed.
+        max_clock = run_command(["lscpu", "--parse=MAXMHZ"])
+
+        if max_clock:
+            for line in max_clock.splitlines():
+                if line.strip() and not line.startswith("#"):
+                    reported_clock = line.strip()
+                    break
+
+        reported_clock = reported_clock or _proc_cpuinfo("cpu MHz")
 
     physical_cores = psutil.cpu_count(logical=False)
     logical_threads = psutil.cpu_count(logical=True)
@@ -142,16 +237,9 @@ def get_cpu_info() -> dict:
         if frequency.max:
             max_frequency = f"{frequency.max / 1000:.2f} GHz"
 
-    reported_clock = run_command([
-        "powershell",
-        "-NoProfile",
-        "-Command",
-        "(Get-CimInstance Win32_Processor).MaxClockSpeed",
-    ])
-
     if reported_clock:
         try:
-            reported_clock = f"{int(reported_clock) / 1000:.2f} GHz"
+            reported_clock = f"{float(reported_clock) / 1000:.2f} GHz"
         except ValueError:
             reported_clock = "Unknown"
     else:
@@ -226,16 +314,35 @@ def get_memory_info() -> dict:
 
 
 def get_ram_modules() -> list[dict]:
-    """Get physical RAM module specifications and slot layout on Windows.
+    """Get physical RAM module specifications and slot layout.
+
+    Modules are enumerated through WMI on Windows and read from the SMBIOS
+    tables with ``dmidecode`` on Linux, which needs root for those tables; a
+    machine where the read is refused reports no modules rather than failing
+    the scan.
 
     Returns:
         list[dict]: List of RAM module dictionaries with manufacturer, part
             number, capacity, speed, configured speed, memory type, and slot
             location.
     """
-    if platform.system() != "Windows":
-        return []
+    system_name = platform.system()
 
+    if system_name == "Windows":
+        return _windows_ram_modules()
+
+    if system_name == "Linux":
+        return _linux_ram_modules()
+
+    return []
+
+
+def _windows_ram_modules() -> list[dict]:
+    """Read RAM module details from WMI through PowerShell.
+
+    Returns:
+        list[dict]: One dictionary per populated slot.
+    """
     command = [
         "powershell",
         "-NoProfile",
@@ -310,6 +417,110 @@ def get_ram_modules() -> list[dict]:
 
     except Exception:
         return []
+
+
+def _linux_ram_modules() -> list[dict]:
+    """Read RAM module details from SMBIOS with ``dmidecode``.
+
+    Returns:
+        list[dict]: One dictionary per populated slot, using the same keys as
+        the Windows path so a caller reads one shape everywhere. Empty when
+        dmidecode is missing or the SMBIOS tables cannot be read.
+    """
+    output = run_command(["dmidecode", "--type", "17"], timeout=10)
+
+    if not output:
+        return []
+
+    # dmidecode's memory type names already match the strings the Windows
+    # path reports, so only the older unnamed values need mapping.
+    memory_types = {
+        "DDR": "DDR",
+        "DDR2": "DDR2",
+        "DDR3": "DDR3",
+        "DDR4": "DDR4",
+        "DDR5": "DDR5",
+    }
+
+    modules = []
+    current: dict[str, str] = {}
+
+    def flush() -> None:
+        """Append the module just parsed, when the slot holds one."""
+        if current.get("Size", "No Module Installed") in (
+            "No Module Installed",
+            "Unknown",
+            "",
+        ):
+            return
+
+        size = current.get("Size", "")
+
+        try:
+            capacity_text = (
+                f"{float(size.split()[0]):.1f} GB"
+                if size.lower().endswith("gb")
+                else size
+            )
+        except ValueError:
+            capacity_text = size or "Unknown"
+
+        # dmidecode reports the unit itself, while some tables carry the bare
+        # number; both are normalised to the "3200 MT/s" form the Windows path
+        # produces.
+        def rate(value: str) -> str:
+            """Format one memory speed field."""
+            stripped = value.strip()
+
+            if not stripped or stripped.lower() == "unknown":
+                return "Unknown"
+
+            return (
+                stripped
+                if "mt/s" in stripped.lower()
+                else f"{stripped} MT/s"
+            )
+
+        speed = rate(current.get("Speed", "Unknown"))
+        configured_speed = rate(
+            current.get("Configured Memory Speed", "") or speed
+        )
+        ram_type = memory_types.get(
+            current.get("Type", "").strip(),
+            "Unknown",
+        )
+
+        modules.append({
+            "manufacturer": (
+                current.get("Manufacturer", "Unknown").strip() or "Unknown"
+            ),
+            "part_number": (
+                current.get("Part Number", "Unknown").strip() or "Unknown"
+            ),
+            "capacity": capacity_text,
+            "speed": speed,
+            "configured_speed": configured_speed,
+            "type": ram_type,
+            "slot": (
+                current.get("Locator", "Unknown").strip() or "Unknown"
+            ),
+        })
+
+    for line in output.splitlines():
+        if line.startswith("Memory Device"):
+            flush()
+            current = {}
+            continue
+
+        if ":" not in line:
+            continue
+
+        name, _, value = line.partition(":")
+        current[name.strip()] = value.strip()
+
+    flush()
+
+    return modules
 
 
 def get_memory_channels() -> str:
@@ -482,6 +693,10 @@ def get_gpu_thermal() -> list[dict]:
 def get_storage_info() -> list[dict]:
     """Get storage drive metrics and disk usage for mounted filesystems.
 
+    Windows enumerates drive letters; Linux reports the distinct physical
+    filesystems behind its mount points, so a drive mounted in two places is
+    counted once.
+
     Returns:
         list[dict]: List of drive dictionaries with drive path, total bytes,
             used bytes, and free bytes.
@@ -505,15 +720,54 @@ def get_storage_info() -> list[dict]:
             except Exception:
                 pass
     else:
+        # One entry per device rather than per mount point, so /, /home and a
+        # bind mount of either do not each report the same capacity.
+        seen: set[tuple[int, int]] = set()
+
         try:
-            total, used, free = shutil.disk_usage("/")
+            partitions = psutil.disk_partitions(all=False)
+        except Exception:
+            partitions = []
+
+        for partition in partitions:
+            # Loopback and squashfs mounts — snaps, Flatpak runtimes, images —
+            # are read-only payloads rather than storage the caller can use,
+            # and reporting each one buries the real drives.
+            if partition.fstype in ("squashfs", "iso9660") or partition.device.startswith("/dev/loop"):
+                continue
+
+            try:
+                total, used, free = shutil.disk_usage(partition.mountpoint)
+            except Exception:
+                # An unreadable or permission-denied mount is skipped; the
+                # rest of the machine is still worth reporting.
+                continue
+
+            identity = (total, free)
+
+            if identity in seen:
+                continue
+
+            seen.add(identity)
             drives.append({
-                "drive": "/",
+                "drive": partition.mountpoint,
                 "total": total,
                 "used": used,
                 "free": free,
             })
-        except Exception:
-            pass
+
+        if not drives:
+            # No usable partition table: the root filesystem is still a valid
+            # answer, and the one the caller almost certainly wanted.
+            try:
+                total, used, free = shutil.disk_usage("/")
+                drives.append({
+                    "drive": "/",
+                    "total": total,
+                    "used": used,
+                    "free": free,
+                })
+            except Exception:
+                pass
 
     return drives

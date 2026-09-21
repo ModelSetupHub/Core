@@ -147,10 +147,10 @@ def _collect_log_files() -> tuple[list[Path], dict[str, Path]]:
     """Locate Ollama's log directories and index the log files they hold.
 
     Ollama does not expose its log location, so the documented per-platform
-    directories are probed instead: ``%LOCALAPPDATA%\\Ollama`` on Windows and
-    ``~/.ollama/logs`` elsewhere. Both are probed on every platform because a
-    manually placed installation can use either, and only directories that
-    exist are reported.
+    directories are probed instead: ``%LOCALAPPDATA%\\Ollama`` on Windows, and
+    ``~/.ollama/logs`` plus ``/var/log/ollama`` on Linux. Both are probed on
+    every platform because a manually placed installation can use either, and
+    only directories that exist are reported.
 
     File names are unique within the index: when the same name appears in more
     than one directory, the first directory in search order wins.
@@ -199,9 +199,9 @@ def _collect_log_files() -> tuple[list[Path], dict[str, Path]]:
         )
         raise RuntimeError(
             "No Ollama log directory was found. Ollama logs to "
-            "%LOCALAPPDATA%\\Ollama on Windows and ~/.ollama/logs "
-            "elsewhere; neither exists, so Ollama has most likely never run "
-            "on this machine."
+            "%LOCALAPPDATA%\\Ollama on Windows and ~/.ollama/logs or "
+            "/var/log/ollama on Linux; none of them exists, so Ollama has "
+            "most likely never run on this machine."
         )
 
     found: dict[str, Path] = {}
@@ -423,7 +423,12 @@ def read_ollama_logs(
 def install(
     installer_path: str,
 ) -> None:
-    """Execute an Ollama standalone installer executable.
+    """Execute an Ollama installer file for this platform.
+
+    Windows gets an executable that runs on its own. On Linux the file is
+    normally the official ``install.sh``, which is a shell script rather than
+    a binary, so it is run through bash — with sudo when the caller is not
+    already root, since the script writes into ``/usr/local``.
 
     Args:
         installer_path: Path to the installer file on disk.
@@ -447,6 +452,22 @@ def install(
         )
         raise FileNotFoundError(f"Installer not found: {installer}")
 
+    if os.name == "nt":
+        command = [str(installer)]
+    else:
+        # The script needs a shell and, for a system-wide install, elevation;
+        # sudo is only prepended when already running unprivileged so a root
+        # caller does not depend on sudo being installed.
+        if installer.suffix.lower() == ".sh":
+            script = f"bash '{installer}'"
+        else:
+            script = f"tar -xf '{installer}'"
+
+        if os.geteuid() == 0:
+            command = ["bash", "-c", script]
+        else:
+            command = ["sudo", "bash", "-c", script]
+
     write_log(
         level="INFO",
         component=COMPONENT,
@@ -459,7 +480,7 @@ def install(
 
     try:
         result = subprocess.run(
-            [str(installer)],
+            command,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -584,6 +605,9 @@ def stop(
     timeout: float = STOP_TIMEOUT,
 ) -> None:
     """Terminate the Ollama process and wait until API stops responding.
+
+    The process is named and terminated with the platform's own tool —
+    ``taskkill`` on Windows, ``pkill`` on Linux.
 
     Args:
         timeout: Maximum seconds to wait for shutdown. Defaults to 10.0.

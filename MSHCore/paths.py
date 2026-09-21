@@ -1,9 +1,10 @@
 """Filesystem locations MSHCore reads and writes.
 
 Everything the toolkit stores lives under one root in the current user's local
-application data::
+application data. The root is resolved per platform — ``%LOCALAPPDATA%\\MSH``
+on Windows, ``~/.msh`` on Linux::
 
-    %LOCALAPPDATA%\\MSH
+    %LOCALAPPDATA%\\MSH      (Windows)      ~/.msh      (Linux)
     ├── downloads/          completed downloads
     ├── logs/
     │   └── executions.log  the execution log
@@ -14,10 +15,9 @@ The paths are collected here so the download manager and the logger cannot
 drift apart, and so a caller that wants to know where something landed reads
 the same constant the writer used.
 
-The root is deliberately per-user rather than machine-wide: ``%LOCALAPPDATA%``
-is writable without elevation, so nothing here depends on the process having
-been started as an administrator. On a platform with no ``%LOCALAPPDATA%`` the
-root is ``~/.msh``.
+The root is deliberately per-user rather than machine-wide: it is writable
+without elevation on either platform, so nothing here depends on the process
+having been started as an administrator.
 """
 
 from __future__ import annotations
@@ -37,8 +37,9 @@ def app_data_directory() -> Path:
     when the module was first imported.
 
     Returns:
-        Path: ``%LOCALAPPDATA%\\MSH`` when that variable is set, otherwise
-        ``~/.msh``.
+        Path: ``%LOCALAPPDATA%\\MSH`` on Windows when that variable is set,
+        otherwise ``~/.msh``, which is the root on Linux and the fallback
+        wherever the variable is absent.
     """
     local_app_data = os.environ.get("LOCALAPPDATA")
 
@@ -52,7 +53,9 @@ def downloads_directory() -> Path:
     """Return where completed downloads land by default.
 
     Returns:
-        Path: ``%LOCALAPPDATA%\\MSH\\downloads``. Not created; pass it to
+        Path: ``downloads`` under the application data root — that is
+        ``%LOCALAPPDATA%\\MSH\\downloads`` on Windows and
+        ``~/.msh/downloads`` on Linux. Not created; pass it to
         :func:`ensure_directory` when it has to exist.
     """
     return app_data_directory() / "downloads"
@@ -62,8 +65,10 @@ def logs_directory() -> Path:
     """Return the directory the execution log is written to.
 
     Returns:
-        Path: ``%LOCALAPPDATA%\\MSH\\logs``. Not created; pass it to
-        :func:`ensure_directory` when it has to exist.
+        Path: ``logs`` under the application data root — that is
+        ``%LOCALAPPDATA%\\MSH\\logs`` on Windows and ``~/.msh/logs`` on
+        Linux. Not created; pass it to :func:`ensure_directory` when it has to
+        exist.
     """
     return app_data_directory() / "logs"
 

@@ -58,9 +58,9 @@ class DownloadManager:
 
     One session downloads its queue one file at a time on a background
     thread, tracking per-file bytes and transfer speed, retrying failures,
-    and supporting pause, resume, skip and cancellation. On Windows a
-    terminal session also offers single-key controls, and every state change
-    is written to the execution log.
+    and supporting pause, resume, skip and cancellation. In a terminal
+    session single-key controls are also offered — ``p``, ``s``, ``c`` and
+    ``q`` — and every state change is written to the execution log.
     """
 
     def __init__(
@@ -71,8 +71,9 @@ class DownloadManager:
         """Initialize the DownloadManager.
 
         The directory is created along with its parents on first use. It
-        defaults to ``%LOCALAPPDATA%\\MSH\\downloads``, which is writable
-        without elevation.
+        defaults to ``%LOCALAPPDATA%\\MSH\\downloads`` on Windows and
+        ``~/.msh/downloads`` on Linux, both of which are writable without
+        elevation.
 
         Args:
             download_directory: Target folder path for downloaded files.
@@ -443,7 +444,7 @@ class DownloadManager:
 
         worker.start()
 
-        if os.name == "nt" and self._console_input_available():
+        if self._console_input_available():
             with self._lock:
                 self._keyboard_thread = threading.Thread(
                     target=self._keyboard_listener,
@@ -918,14 +919,36 @@ class DownloadManager:
     # ========================================================
 
     def _keyboard_listener(self) -> None:
-        """Listen for interactive console keybindings on Windows.
+        """Listen for interactive console keybindings.
 
-        Exits as soon as the worker signals that the queue has ended, so a
-        cancelled session leaves no thread behind reading the console.
+        The keys are the same on every platform; only the mechanism differs,
+        ``msvcrt`` on Windows and a ``termios`` raw-mode read on Linux. Exits
+        as soon as the worker signals that the queue has ended, so a cancelled
+        session leaves no thread behind reading the console.
         """
-        if os.name != "nt":
-            return
+        if os.name == "nt":
+            self._windows_keyboard_listener()
+        else:
+            self._posix_keyboard_listener()
 
+    def _handle_key(self, key: str) -> None:
+        """Apply one keypress to the session.
+
+        Args:
+            key: The pressed character, already lowercased.
+        """
+        if key == "p":
+            if self._paused:
+                self.resume()
+            else:
+                self.pause()
+        elif key == "s":
+            self.skip()
+        elif key in ("c", "q"):
+            self.cancel()
+
+    def _windows_keyboard_listener(self) -> None:
+        """Poll the Windows console for keypresses through ``msvcrt``."""
         import msvcrt
 
         while not self._keyboard_stop.is_set():
@@ -935,16 +958,58 @@ class DownloadManager:
                 self._keyboard_stop.wait(0.1)
                 continue
 
-            key = msvcrt.getwch().lower()
-            if key == "p":
-                if self._paused:
-                    self.resume()
-                else:
-                    self.pause()
-            elif key == "s":
-                self.skip()
-            elif key in ("c", "q"):
-                self.cancel()
+            self._handle_key(msvcrt.getwch().lower())
+
+    def _posix_keyboard_listener(self) -> None:
+        """Read terminal keypresses on Linux through ``termios`` raw mode.
+
+        The terminal is put into non-canonical mode so a key arrives without
+        Enter, and restored on the way out — a terminal left raw would swallow
+        echo for whatever the caller runs next.
+        """
+        import select
+        import termios
+        import tty
+
+        try:
+            descriptor = sys.stdin.fileno()
+            saved = termios.tcgetattr(descriptor)
+        except (AttributeError, ValueError, OSError, termios.error):
+            # No usable terminal after all; the caller keeps the API controls.
+            return
+
+        try:
+            # cbreak rather than raw: keys arrive unbuffered but Ctrl-C still
+            # raises KeyboardInterrupt for the process that owns the terminal.
+            tty.setcbreak(descriptor)
+
+            while not self._keyboard_stop.is_set():
+                try:
+                    ready, _, _ = select.select([descriptor], [], [], 0.1)
+                except (OSError, ValueError):
+                    break
+
+                if not ready:
+                    continue
+
+                try:
+                    key = os.read(descriptor, 1).decode(
+                        "utf-8",
+                        errors="replace",
+                    )
+                except OSError:
+                    break
+
+                if not key:
+                    # End of input: stdin was not a terminal after all.
+                    break
+
+                self._handle_key(key.lower())
+        finally:
+            try:
+                termios.tcsetattr(descriptor, termios.TCSADRAIN, saved)
+            except (OSError, termios.error):
+                pass
 
     # ========================================================
     # Pause

@@ -125,15 +125,20 @@ def get_python_path(
     environment_path = Path(environment).expanduser().resolve()
 
     # Virtual environments place the interpreter in Scripts/ on Windows and
-    # bin/ everywhere else.
+    # bin/ everywhere else. The Linux interpreter is normally named python3,
+    # so the generic name is tried first and the versioned one after it.
     if sys.platform == "win32":
-        python_path = environment_path / "Scripts" / "python.exe"
+        candidates = [environment_path / "Scripts" / "python.exe"]
     else:
-        python_path = environment_path / "bin" / "python"
+        candidates = [
+            environment_path / "bin" / "python",
+            environment_path / "bin" / "python3",
+        ]
 
-    if not python_path.is_file():
-        raise FileNotFoundError(
-            f"Python executable not found: {python_path}"
-        )
+    for python_path in candidates:
+        if python_path.is_file():
+            return str(python_path)
 
-    return str(python_path)
+    raise FileNotFoundError(
+        f"Python executable not found: {candidates[0]}"
+    )

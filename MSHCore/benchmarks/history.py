@@ -9,12 +9,14 @@ The store is runner-agnostic: it validates only the shape of what arrives —
 what was benchmarked, and at least one test — and never talks to a model
 runtime, so a runner for any model server saves here unchanged.
 
-Layout under the toolkit's data root (see :mod:`MSHCore.paths`)::
+Layout under the toolkit's data root (see :mod:`MSHCore.paths`), which is
+``%LOCALAPPDATA%\\MSH`` on Windows and ``~/.msh`` on Linux::
 
-    %LOCALAPPDATA%\\MSH\\
-    └── benchmarks/
-        ├── index.json                  one small record per saved run
-        └── 20260905T211530_a1b2c3.json the full result of one run
+    downloads/          completed downloads
+    logs/               the execution log
+    benchmarks/
+    ├── index.json                  one small record per saved run
+    └── 20260905T211530_a1b2c3.json the full result of one run
 
 The file name carries the save time, so a plain directory listing is already
 chronological. The index exists so listing runs never opens the result
@@ -58,8 +60,9 @@ def directory() -> Path:
     """Return the benchmarks directory, creating it when missing.
 
     Returns:
-        Path: ``%LOCALAPPDATA%\\MSH\\benchmarks`` (or ``~/.msh`` on a platform
-        without that variable), now existing.
+        Path: ``benchmarks`` under the application data root —
+        ``%LOCALAPPDATA%\\MSH\\benchmarks`` on Windows, ``~/.msh/benchmarks``
+        on Linux — now existing.
     """
     return ensure_directory(app_data_directory() / DIRECTORY_NAME)
 

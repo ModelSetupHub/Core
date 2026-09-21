@@ -12,8 +12,9 @@ def _log_file_path() -> Path:
 
     Kept separate from ``get_log_file_info`` so appending a single entry does
     not have to read the whole log: ``write_log`` runs on every logged event
-    and needs nothing but the path. The directory,
-    ``%LOCALAPPDATA%\\MSH\\logs``, is created with its parents on first use.
+    and needs nothing but the path. The directory — ``%LOCALAPPDATA%\\MSH\\logs``
+    on Windows, ``~/.msh/logs`` on Linux — is created with its parents on
+    first use.
     """
     return ensure_directory(logs_directory()) / LOG_FILE_NAME
 
@@ -21,11 +22,13 @@ def _log_file_path() -> Path:
 def get_log_file_info() -> dict:
     """Describe the execution log file: where it is and how much it holds.
 
-    The log lives at ``%LOCALAPPDATA%\\MSH\\logs\\executions.log`` (see
-    :mod:`MSHCore.paths`). Creates the logs directory, and its parents, if
-    they do not already exist. A log that has never been written to is
-    reported at zero lines and zero bytes rather than treated as an error, so
-    this can be called before the first event.
+    The log lives under the platform's application data root — see
+    :mod:`MSHCore.paths` — which is
+    ``%LOCALAPPDATA%\\MSH\\logs\\executions.log`` on Windows and
+    ``~/.msh/logs/executions.log`` on Linux. Creates the logs directory, and
+    its parents, if they do not already exist. A log that has never been
+    written to is reported at zero lines and zero bytes rather than treated as
+    an error, so this can be called before the first event.
 
     Returns:
         dict: Mapping with 'path' as the absolute ``Path`` to the log file,
