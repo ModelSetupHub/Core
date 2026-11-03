@@ -10,7 +10,8 @@ environments, and downloads large model files without falling over halfway. Ever
 execution log.
 
 This repository is a library and nothing else: you import it and call functions. There is no command-line tool, no
-server, and no user interface here — those live in the two repositories built on top of it.
+server, and no user interface here — those live in the two repositories built on top of it. It runs on Windows and Linux
+alike.
 
 ## Where this fits
 
